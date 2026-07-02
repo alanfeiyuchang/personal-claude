@@ -94,6 +94,7 @@ export interface UsageReport {
 export type ServerMessage =
   | { type: 'hello'; sessions: SessionSummary[]; devRoot: string }
   | { type: 'usage'; reqId?: string; usage: UsageReport }
+  | { type: 'limits'; reqId?: string; limits: PlanLimit[] | null }
   | { type: 'session_update'; session: SessionSummary }
   | { type: 'session_event'; id: string; event: TranscriptEvent }
   | { type: 'session_removed'; id: string }

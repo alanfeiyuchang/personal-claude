@@ -19,6 +19,9 @@ export default function App() {
   const showNewSession = useStore((s) => s.showNewSession);
   const setShowNewSession = useStore((s) => s.setShowNewSession);
   const showUsage = useStore((s) => s.showUsage);
+  const limitExceeded = useStore(
+    (s) => s.limits?.some((l) => l.percent >= 100 || l.severity === 'exceeded') ?? false
+  );
 
   // ⌘1..9 session switching, ⌘N new session
   useEffect(() => {
@@ -42,6 +45,7 @@ export default function App() {
   return (
     <div className="app">
       <Particles state={session?.state ?? 'idle'} />
+      {limitExceeded && <div className="limit-glow" aria-hidden="true" />}
 
       <SessionRail />
 

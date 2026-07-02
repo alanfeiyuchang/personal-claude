@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { WebSocketServer } from 'ws';
 import { ClaudeSession } from './session.mjs';
-import { collectUsage } from './usage.mjs';
+import { collectUsage, getPlanLimits } from './usage.mjs';
 
 const PORT = Number(process.env.PC_PORT || 4317);
 const HOST = '127.0.0.1';
@@ -135,6 +135,11 @@ async function handleClientMessage(ws, msg) {
     case 'get_usage': {
       const usage = await collectUsage();
       sendTo(ws, { type: 'usage', reqId: msg.reqId, usage });
+      break;
+    }
+    case 'get_limits': {
+      // plan limits only — no transcript scan, cheap enough to poll
+      sendTo(ws, { type: 'limits', reqId: msg.reqId, limits: await getPlanLimits() });
       break;
     }
     case 'list_dirs': {

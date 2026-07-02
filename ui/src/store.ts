@@ -1,5 +1,11 @@
 import { create } from 'zustand';
-import type { SessionSummary, TranscriptEvent, ServerMessage, UsageReport } from './types';
+import type {
+  SessionSummary,
+  TranscriptEvent,
+  ServerMessage,
+  UsageReport,
+  PlanLimit,
+} from './types';
 
 interface Store {
   connected: boolean;
@@ -12,6 +18,7 @@ interface Store {
   showNewSession: boolean;
   showUsage: boolean;
   usage: UsageReport | null;
+  limits: PlanLimit[] | null;
 
   setActive: (id: string) => void;
   setShowNewSession: (v: boolean) => void;
@@ -31,6 +38,7 @@ export const useStore = create<Store>((set, get) => ({
   showNewSession: false,
   showUsage: false,
   usage: null,
+  limits: null,
 
   setActive: (id) => set({ activeId: id }),
   setShowNewSession: (v) => set({ showNewSession: v }),
@@ -77,6 +85,10 @@ export const useStore = create<Store>((set, get) => ({
           });
           break;
         }
+        // a finished turn is the moment plan-limit numbers move
+        if (s.state === 'done' && st.sessions[s.id]?.state !== 'done') {
+          wsSend({ type: 'get_limits' });
+        }
         set((prev) => ({
           sessions: { ...prev.sessions, [s.id]: s },
           order: prev.order.includes(s.id) ? prev.order : [...prev.order, s.id],
@@ -111,7 +123,11 @@ export const useStore = create<Store>((set, get) => ({
         break;
       }
       case 'usage': {
-        set({ usage: msg.usage });
+        set({ usage: msg.usage, ...(msg.usage.limits ? { limits: msg.usage.limits } : {}) });
+        break;
+      }
+      case 'limits': {
+        if (msg.limits) set({ limits: msg.limits });
         break;
       }
       case 'dirs': {

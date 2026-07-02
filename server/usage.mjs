@@ -31,6 +31,16 @@ async function getOauthToken() {
 }
 
 // Plan rate-limit utilization (same numbers as Claude Code's /usage).
+// Cached briefly so UI polling / multiple clients don't hammer the endpoint.
+let limitsCache = { at: 0, limits: null };
+
+export async function getPlanLimits() {
+  if (Date.now() - limitsCache.at < 15_000) return limitsCache.limits;
+  const limits = await fetchPlanLimits().catch(() => null);
+  limitsCache = { at: Date.now(), limits };
+  return limits;
+}
+
 async function fetchPlanLimits() {
   const token = await getOauthToken();
   if (!token) return null;
@@ -83,7 +93,7 @@ function addTo(bucket, model, usage, cost) {
 }
 
 export async function collectUsage() {
-  const limitsPromise = fetchPlanLimits().catch(() => null);
+  const limitsPromise = getPlanLimits();
   const now = Date.now();
   const weekStart = now - 7 * 24 * 3600e3;
   const midnight = new Date();

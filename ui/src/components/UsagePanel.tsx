@@ -33,7 +33,7 @@ function fmtReset(iso: string | null) {
   );
 }
 
-function limitColor(l: PlanLimit) {
+export function limitColor(l: PlanLimit) {
   if (l.percent >= 100 || l.severity === 'exceeded' || l.severity === 'critical')
     return '#fb7185';
   if (l.percent >= 80 || l.severity === 'warning') return '#fbbf24';

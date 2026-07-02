@@ -34,7 +34,7 @@ body {
 
 .app {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr) 280px;
+  grid-template-columns: var(--rail-w, 220px) minmax(0, 1fr) 280px;
   gap: 14px;
   height: 100%;
   padding: 14px;
@@ -57,6 +57,36 @@ body {
   pointer-events: none;
 }
 
+/* red ambient light when a plan limit is 100% met */
+.limit-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 0; /* above .particle-layer (same z, later in DOM), below panels (z:1) */
+  pointer-events: none;
+  background:
+    radial-gradient(120% 55% at 50% 112%, rgba(251, 113, 133, 0.24), transparent 65%),
+    radial-gradient(120% 40% at 50% -12%, rgba(251, 113, 133, 0.14), transparent 65%),
+    radial-gradient(45% 110% at -8% 50%, rgba(251, 113, 133, 0.1), transparent 70%),
+    radial-gradient(45% 110% at 108% 50%, rgba(251, 113, 133, 0.1), transparent 70%);
+  animation: limit-glow-pulse 3.6s ease-in-out infinite;
+}
+
+@keyframes limit-glow-pulse {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .limit-glow {
+    animation: none;
+  }
+}
+
 .glass {
   background: var(--panel);
   border: 1px solid var(--panel-border);
@@ -68,11 +98,39 @@ body {
 /* ── session rail ─────────────────────────────── */
 
 .rail {
+  position: relative;
   z-index: 1;
   display: flex;
   flex-direction: column;
   padding: 14px 10px;
   overflow: hidden;
+}
+
+.rail-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.rail-resizer::after {
+  content: '';
+  position: absolute;
+  right: 1px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.rail-resizer:hover::after,
+.rail-resizer.dragging::after {
+  background: var(--accent);
 }
 
 .rail-title {
@@ -207,6 +265,72 @@ body {
 .rail-usage:hover {
   color: var(--text);
   background: rgba(148, 163, 184, 0.08);
+}
+
+/* plan-limit mini widget (replaces the old Usage button) */
+.rail-limits {
+  margin-top: 8px;
+  padding: 8px;
+  border-radius: 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  width: 100%;
+}
+
+.rail-limits:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.rail-limits-empty {
+  font-size: 12px;
+  text-align: center;
+}
+
+.rail-limit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+
+.rail-limit-label {
+  width: 42px;
+  flex-shrink: 0;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-limit-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(148, 163, 184, 0.12);
+  overflow: hidden;
+}
+
+.rail-limit-fill {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+
+.rail-limit-pct {
+  width: 32px;
+  flex-shrink: 0;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 10px;
 }
 
 /* ── usage panel ──────────────────────────────── */
