@@ -1,7 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore, wsSend } from '../store';
 import { STATE_META, type PlanLimit } from '../types';
 import { limitColor } from './UsagePanel';
+import { timeAgo } from '../util';
 
 const RAIL_WIDTH_KEY = 'pc-rail-width';
 const clampWidth = (w: number) => Math.min(420, Math.max(170, w));
@@ -57,6 +58,98 @@ function PlanLimitButton() {
         ))
       )}
     </button>
+  );
+}
+
+const GIT_OPEN_KEY = 'pc-git-open';
+
+function GitPanel() {
+  const dir = useStore((s) => (s.activeId ? s.sessions[s.activeId]?.dir ?? null : null));
+  const turnDone = useStore(
+    (s) => (s.activeId ? s.sessions[s.activeId]?.state === 'done' : false)
+  );
+  const git = useStore((s) => s.git);
+  const [open, setOpen] = useState(() => localStorage.getItem(GIT_OPEN_KEY) === '1');
+
+  // refresh on session switch and whenever a turn finishes (commits/status
+  // are most likely to have changed right then); local git, so it's cheap
+  useEffect(() => {
+    if (dir) wsSend({ type: 'get_git', dir });
+  }, [dir, turnDone]);
+
+  if (!dir) return null;
+  const info = git && git.dir === dir ? git.info : null;
+
+  const badges = info?.repo
+    ? [
+        info.changed ? `●${info.changed}` : '',
+        info.ahead ? `↑${info.ahead}` : '',
+        info.behind ? `↓${info.behind}` : '',
+      ]
+        .filter(Boolean)
+        .join(' ')
+    : '';
+
+  return (
+    <div className="rail-git">
+      <button
+        className="rail-git-head"
+        title={info?.repo ? `${dir}\nbranch ${info.branch}` : dir}
+        onClick={() => {
+          const v = !open;
+          setOpen(v);
+          localStorage.setItem(GIT_OPEN_KEY, v ? '1' : '0');
+        }}
+      >
+        <span className="rail-git-chevron">{open ? '▾' : '▸'}</span>
+        <span className="rail-git-branch">⎇ {info?.repo ? info.branch : 'git'}</span>
+        {badges && <span className="rail-git-badges">{badges}</span>}
+      </button>
+      {open && (
+        <div className="rail-git-body">
+          {!info ? (
+            <div className="rail-git-empty">loading…</div>
+          ) : !info.repo ? (
+            <div className="rail-git-empty">not a git repository</div>
+          ) : (
+            <>
+              <div className="rail-git-actions">
+                <button className="rail-git-action" onClick={() => wsSend({ type: 'get_git', dir })}>
+                  ↻ refresh
+                </button>
+                {info.remoteUrl && (
+                  <button
+                    className="rail-git-action"
+                    onClick={() => window.open(info.remoteUrl!, '_blank', 'noopener')}
+                  >
+                    ↗ repo
+                  </button>
+                )}
+              </div>
+              <div className="rail-git-commits">
+                {(info.commits ?? []).map((c) => (
+                  <button
+                    key={c.sha}
+                    className="rail-git-commit"
+                    disabled={!c.url}
+                    title={`${c.subject}\n${c.author} · ${c.sha.slice(0, 7)}${
+                      c.url ? '\nclick to open on GitHub' : ''
+                    }`}
+                    onClick={() => c.url && window.open(c.url, '_blank', 'noopener')}
+                  >
+                    <span className="rail-git-msg">{c.subject}</span>
+                    <span className="rail-git-time">{timeAgo(c.ts)}</span>
+                  </button>
+                ))}
+                {info.commits?.length === 0 && (
+                  <div className="rail-git-empty">no commits yet</div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -135,6 +228,7 @@ export function SessionRail() {
           );
         })}
       </div>
+      <GitPanel />
       <button className="rail-new" onClick={() => setShowNewSession(true)}>
         ＋ New session
       </button>

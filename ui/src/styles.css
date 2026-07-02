@@ -236,6 +236,130 @@ body {
   color: var(--danger);
 }
 
+/* git panel (between session list and new-session) */
+.rail-git {
+  margin-top: 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.rail-git-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.rail-git-head:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.rail-git-chevron {
+  flex-shrink: 0;
+  font-size: 10px;
+}
+
+.rail-git-branch {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-git-badges {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--accent-2);
+}
+
+.rail-git-body {
+  border-top: 1px solid var(--panel-border);
+}
+
+.rail-git-actions {
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+}
+
+.rail-git-action {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 10.5px;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+
+.rail-git-action:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.rail-git-commits {
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.rail-git-commit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11px;
+  text-align: left;
+}
+
+.rail-git-commit:hover:not(:disabled) {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.rail-git-commit:disabled {
+  cursor: default;
+}
+
+.rail-git-msg {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rail-git-time {
+  flex-shrink: 0;
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+.rail-git-empty {
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
 .rail-new {
   margin-top: 10px;
   padding: 10px;
@@ -331,6 +455,71 @@ body {
   text-align: right;
   font-family: var(--mono);
   font-size: 10px;
+}
+
+/* ── previous-session list (new-session modal) ── */
+
+.history-list {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.history-item:last-child {
+  border-bottom: none;
+}
+
+.history-item:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.history-item.selected {
+  background: rgba(139, 124, 246, 0.16);
+}
+
+.history-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-time {
+  flex-shrink: 0;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.history-delete {
+  display: none;
+  flex-shrink: 0;
+  padding: 0 2px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.history-item:hover .history-delete {
+  display: block;
+}
+
+.history-delete:hover {
+  filter: brightness(1.4) hue-rotate(-20deg);
 }
 
 /* ── usage panel ──────────────────────────────── */

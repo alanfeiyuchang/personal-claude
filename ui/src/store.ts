@@ -5,6 +5,8 @@ import type {
   ServerMessage,
   UsageReport,
   PlanLimit,
+  HistorySession,
+  GitInfo,
 } from './types';
 
 interface Store {
@@ -19,6 +21,8 @@ interface Store {
   showUsage: boolean;
   usage: UsageReport | null;
   limits: PlanLimit[] | null;
+  history: { dir: string; sessions: HistorySession[] } | null;
+  git: { dir: string; info: GitInfo } | null;
 
   setActive: (id: string) => void;
   setShowNewSession: (v: boolean) => void;
@@ -39,6 +43,8 @@ export const useStore = create<Store>((set, get) => ({
   showUsage: false,
   usage: null,
   limits: null,
+  history: null,
+  git: null,
 
   setActive: (id) => set({ activeId: id }),
   setShowNewSession: (v) => set({ showNewSession: v }),
@@ -128,6 +134,19 @@ export const useStore = create<Store>((set, get) => ({
       }
       case 'limits': {
         if (msg.limits) set({ limits: msg.limits });
+        break;
+      }
+      case 'history': {
+        set({ history: { dir: msg.dir, sessions: msg.sessions } });
+        break;
+      }
+      case 'git_info': {
+        set({ git: { dir: msg.dir, info: msg.info } });
+        break;
+      }
+      case 'created': {
+        // focus the workspace on the session just created/resumed by this client
+        set({ activeId: msg.id });
         break;
       }
       case 'dirs': {

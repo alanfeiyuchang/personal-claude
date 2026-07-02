@@ -10,6 +10,8 @@ import os from 'node:os';
 import { WebSocketServer } from 'ws';
 import { ClaudeSession } from './session.mjs';
 import { collectUsage, getPlanLimits } from './usage.mjs';
+import { listHistory, deleteHistory } from './history.mjs';
+import { getGitInfo } from './git.mjs';
 
 const PORT = Number(process.env.PC_PORT || 4317);
 const HOST = '127.0.0.1';
@@ -140,6 +142,23 @@ async function handleClientMessage(ws, msg) {
     case 'get_limits': {
       // plan limits only — no transcript scan, cheap enough to poll
       sendTo(ws, { type: 'limits', reqId: msg.reqId, limits: await getPlanLimits() });
+      break;
+    }
+    case 'get_git': {
+      const dir = expandHome(String(msg.dir || '').trim() || DEV_ROOT);
+      sendTo(ws, { type: 'git_info', reqId: msg.reqId, dir: msg.dir, info: await getGitInfo(dir) });
+      break;
+    }
+    case 'list_history': {
+      const dir = expandHome(String(msg.dir || '').trim() || DEV_ROOT);
+      sendTo(ws, { type: 'history', reqId: msg.reqId, dir: msg.dir, sessions: await listHistory(dir) });
+      break;
+    }
+    case 'delete_history': {
+      const dir = expandHome(String(msg.dir || '').trim() || DEV_ROOT);
+      await deleteHistory(dir, String(msg.id));
+      // respond with the refreshed list so the UI updates in place
+      sendTo(ws, { type: 'history', reqId: msg.reqId, dir: msg.dir, sessions: await listHistory(dir) });
       break;
     }
     case 'list_dirs': {

@@ -94,6 +94,14 @@ export class ClaudeSession extends EventEmitter {
 
     // Process is up but the first turn hasn't started; init event arrives
     // only after the first user message, so surface it as idle.
+    if (this.resume) {
+      // prior conversation lives in the CLI's context, not our transcript —
+      // leave a marker so the empty panel isn't confusing
+      this._pushTranscript({
+        kind: 'system',
+        text: `continuing session ${this.resume} — earlier messages are in context but not shown`,
+      });
+    }
     this._setState('idle');
     return this;
   }

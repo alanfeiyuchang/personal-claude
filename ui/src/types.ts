@@ -91,6 +91,30 @@ export interface UsageReport {
   limits: PlanLimit[] | null;
 }
 
+export interface HistorySession {
+  id: string; // claude session uuid (transcript filename)
+  label: string;
+  mtime: number;
+}
+
+export interface GitCommit {
+  sha: string;
+  subject: string;
+  author: string;
+  ts: number;
+  url: string | null; // remote commit link, when origin is resolvable
+}
+
+export interface GitInfo {
+  repo: boolean;
+  branch?: string;
+  changed?: number; // dirty files (staged + unstaged + untracked)
+  ahead?: number;
+  behind?: number;
+  remoteUrl?: string | null;
+  commits?: GitCommit[];
+}
+
 export type ServerMessage =
   | { type: 'hello'; sessions: SessionSummary[]; devRoot: string }
   | { type: 'usage'; reqId?: string; usage: UsageReport }
@@ -100,6 +124,8 @@ export type ServerMessage =
   | { type: 'session_removed'; id: string }
   | { type: 'backlog'; id: string; events: TranscriptEvent[] }
   | { type: 'dirs'; reqId?: string; root: string; dirs: string[] }
+  | { type: 'history'; reqId?: string; dir: string; sessions: HistorySession[] }
+  | { type: 'git_info'; reqId?: string; dir: string; info: GitInfo }
   | { type: 'created'; reqId?: string; id: string }
   | { type: 'error'; reqId?: string; message: string };
 
