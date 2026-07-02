@@ -147,6 +147,9 @@ export const useStore = create<Store>((set, get) => ({
       case 'created': {
         // focus the workspace on the session just created/resumed by this client
         set({ activeId: msg.id });
+        // resumed sessions arrive with a seeded transcript that wasn't
+        // streamed as session_event — fetch it explicitly
+        wsSend({ type: 'get_backlog', id: msg.id });
         break;
       }
       case 'dirs': {

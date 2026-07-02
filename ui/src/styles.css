@@ -194,9 +194,21 @@ body {
 }
 
 .rail-name {
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.rail-name-input {
+  width: 100%;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  padding: 0 3px;
+  font: inherit;
   font-weight: 500;
 }
 
@@ -212,6 +224,24 @@ body {
   font-size: 10px;
   color: var(--text-dim);
   flex-shrink: 0;
+}
+
+.rail-rename {
+  display: none;
+  color: var(--text-dim);
+  padding: 0 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.rail-rename:hover {
+  color: var(--text);
+}
+
+.rail-item:hover .rail-rename {
+  display: block;
 }
 
 .rail-close {
@@ -671,6 +701,54 @@ body {
   justify-content: space-between;
   gap: 8px;
   padding: 12px 16px;
+}
+
+.hud-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 0 100%; /* own row above hud-state/hud-meta */
+}
+
+.hud-name {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 480px;
+}
+
+.hud-name-input {
+  font-size: 15px;
+  font-weight: 600;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--text);
+  padding: 1px 6px;
+  font-family: inherit;
+  min-width: 200px;
+}
+
+.hud-rename-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  opacity: 0;
+}
+
+.hud-title:hover .hud-rename-btn {
+  opacity: 1;
+}
+
+.hud-rename-btn:hover {
+  color: var(--text);
+  background: rgba(148, 163, 184, 0.1);
 }
 
 .hud-state {

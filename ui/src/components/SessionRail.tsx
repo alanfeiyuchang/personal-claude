@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore, wsSend } from '../store';
-import { STATE_META, type PlanLimit } from '../types';
+import { STATE_META, type PlanLimit, type SessionSummary } from '../types';
 import { limitColor } from './UsagePanel';
+import { EditableName, type EditableNameHandle } from './EditableName';
 import { timeAgo } from '../util';
 
 const RAIL_WIDTH_KEY = 'pc-rail-width';
@@ -177,6 +178,76 @@ function startRailResize(e: React.PointerEvent<HTMLDivElement>) {
   handle.addEventListener('pointerup', onUp);
 }
 
+function RailItem({
+  id,
+  s,
+  index,
+  active,
+  onActivate,
+}: {
+  id: string;
+  s: SessionSummary;
+  index: number;
+  active: boolean;
+  onActivate: () => void;
+}) {
+  const meta = STATE_META[s.state];
+  const nameRef = useRef<EditableNameHandle>(null);
+
+  return (
+    <div
+      className={`rail-item ${active ? 'active' : ''}`}
+      role="button"
+      tabIndex={0}
+      onClick={onActivate}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onActivate();
+        }
+      }}
+      title={`${s.dir}\n${meta.label}`}
+    >
+      <span className="state-dot" style={{ background: meta.color }} />
+      <span className="rail-body">
+        <EditableName
+          ref={nameRef}
+          value={s.name}
+          className="rail-name"
+          inputClassName="rail-name rail-name-input"
+          onCommit={(name) => wsSend({ type: 'rename', id, name })}
+        />
+        <span className="rail-sub" style={{ color: meta.color }}>
+          {meta.label}
+        </span>
+      </span>
+      <span className="rail-index">⌘{index + 1}</span>
+      <span
+        className="rail-rename"
+        role="button"
+        title="Rename session"
+        onClick={(e) => {
+          e.stopPropagation();
+          nameRef.current?.startEdit();
+        }}
+      >
+        ✎
+      </span>
+      <span
+        className="rail-close"
+        role="button"
+        title="Close session"
+        onClick={(e) => {
+          e.stopPropagation();
+          wsSend({ type: 'remove', id });
+        }}
+      >
+        ×
+      </span>
+    </div>
+  );
+}
+
 export function SessionRail() {
   const order = useStore((s) => s.order);
   const sessions = useStore((s) => s.sessions);
@@ -197,34 +268,15 @@ export function SessionRail() {
         {order.map((id, i) => {
           const s = sessions[id];
           if (!s) return null;
-          const meta = STATE_META[s.state];
           return (
-            <button
+            <RailItem
               key={id}
-              className={`rail-item ${id === activeId ? 'active' : ''}`}
-              onClick={() => setActive(id)}
-              title={`${s.dir}\n${meta.label}`}
-            >
-              <span className="state-dot" style={{ background: meta.color }} />
-              <span className="rail-body">
-                <span className="rail-name">{s.name}</span>
-                <span className="rail-sub" style={{ color: meta.color }}>
-                  {meta.label}
-                </span>
-              </span>
-              <span className="rail-index">⌘{i + 1}</span>
-              <span
-                className="rail-close"
-                role="button"
-                title="Close session"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  wsSend({ type: 'remove', id });
-                }}
-              >
-                ×
-              </span>
-            </button>
+              id={id}
+              s={s}
+              index={i}
+              active={id === activeId}
+              onActivate={() => setActive(id)}
+            />
           );
         })}
       </div>

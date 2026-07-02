@@ -94,12 +94,13 @@ export class ClaudeSession extends EventEmitter {
 
     // Process is up but the first turn hasn't started; init event arrives
     // only after the first user message, so surface it as idle.
-    if (this.resume) {
-      // prior conversation lives in the CLI's context, not our transcript —
-      // leave a marker so the empty panel isn't confusing
+    if (this.resume && this.transcript.length === 0) {
+      // caller (index.mjs) seeds this.transcript from the stored .jsonl
+      // before start(); if that came back empty, say so instead of a
+      // silently blank panel
       this._pushTranscript({
         kind: 'system',
-        text: `continuing session ${this.resume} — earlier messages are in context but not shown`,
+        text: `continuing session ${this.resume} — no earlier messages could be loaded`,
       });
     }
     this._setState('idle');
@@ -130,6 +131,13 @@ export class ClaudeSession extends EventEmitter {
     this.turnStartedAt = Date.now();
     this._pushTranscript({ kind: 'user_text', text, images: cleanImages });
     this._setState('thinking');
+  }
+
+  rename(name) {
+    const trimmed = typeof name === 'string' ? name.trim() : '';
+    if (!trimmed) throw new Error('invalid name');
+    this.name = trimmed;
+    this.emit('update');
   }
 
   setModel(model) {

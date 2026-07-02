@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { wsSend } from '../store';
 import { STATE_META, type SessionSummary } from '../types';
 import { MODELS } from '../models';
+import { EditableName, type EditableNameHandle } from './EditableName';
 
 function fmtTokens(n: number) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -28,8 +29,27 @@ export function Hud({ session }: { session: SessionSummary }) {
       ? Math.max(0, Math.round((Date.now() - session.turnStartedAt) / 1000))
       : null;
 
+  const nameRef = useRef<EditableNameHandle>(null);
+
   return (
     <header className="hud glass">
+      <div className="hud-title">
+        <EditableName
+          ref={nameRef}
+          value={session.name}
+          className="hud-name"
+          inputClassName="hud-name hud-name-input"
+          onCommit={(name) => wsSend({ type: 'rename', id: session.id, name })}
+        />
+        <button
+          className="hud-rename-btn"
+          title="Rename session"
+          onClick={() => nameRef.current?.startEdit()}
+        >
+          ✎
+        </button>
+      </div>
+
       <div className="hud-state" style={{ color: meta.color }}>
         <span className="state-dot big" style={{ background: meta.color }} />
         <span className="hud-state-label">{meta.label}</span>

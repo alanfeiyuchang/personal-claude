@@ -19,7 +19,7 @@ export function NewSession() {
   const setShowNewSession = useStore((s) => s.setShowNewSession);
   const [dir, setDir] = useState('');
   const [customDir, setCustomDir] = useState('');
-  const [model, setModel] = useState('');
+  const [model, setModel] = useState('sonnet');
   const [permissionMode, setPermissionMode] = useState('bypassPermissions');
   const [resume, setResume] = useState<string | null>(null);
 

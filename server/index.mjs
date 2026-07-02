@@ -10,7 +10,7 @@ import os from 'node:os';
 import { WebSocketServer } from 'ws';
 import { ClaudeSession } from './session.mjs';
 import { collectUsage, getPlanLimits } from './usage.mjs';
-import { listHistory, deleteHistory } from './history.mjs';
+import { listHistory, deleteHistory, loadTranscript } from './history.mjs';
 import { getGitInfo } from './git.mjs';
 
 const PORT = Number(process.env.PC_PORT || 4317);
@@ -94,6 +94,9 @@ async function handleClientMessage(ws, msg) {
         permissionMode: msg.permissionMode,
         resume: msg.resume,
       });
+      if (msg.resume) {
+        session.transcript = await loadTranscript(dir, msg.resume).catch(() => []);
+      }
       wireSession(session);
       sessions.set(session.id, session);
       session.start();
@@ -106,6 +109,10 @@ async function handleClientMessage(ws, msg) {
         String(msg.text ?? ''),
         Array.isArray(msg.images) ? msg.images : []
       );
+      break;
+    }
+    case 'rename': {
+      requireSession(msg.id).rename(String(msg.name ?? ''));
       break;
     }
     case 'set_model': {

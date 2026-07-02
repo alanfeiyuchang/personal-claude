@@ -1,13 +1,14 @@
 // Past Claude Code sessions (transcripts under ~/.claude/projects) —
 // listed for the "continue a previous session" flow, deletable for good.
 
-import { readdir, stat, rm, open } from 'node:fs/promises';
+import { readdir, stat, rm, open, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import os from 'node:os';
 
 const PROJECTS_DIR = join(os.homedir(), '.claude', 'projects');
 const LIST_LIMIT = 20;
 const HEAD_BYTES = 64 * 1024;
+const MAX_TRANSCRIPT = 5000; // mirrors the live-session cap in session.mjs
 
 // the CLI names a project's transcript dir by replacing every
 // non-alphanumeric char of the cwd with '-'
@@ -72,6 +73,88 @@ export async function listHistory(dir) {
         f.id.slice(0, 8),
     }))
   );
+}
+
+function flattenToolResult(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((b) => (b.type === 'text' ? b.text : `[${b.type}]`)).join('\n');
+}
+
+function extractImages(blocks) {
+  const images = [];
+  for (const b of blocks) {
+    if (b.type === 'image' && b.source?.type === 'base64' && b.source.data) {
+      images.push({ media_type: b.source.media_type, data: b.source.data });
+    }
+  }
+  return images;
+}
+
+// Rebuild a display transcript from a stored session's .jsonl — same shape
+// as the live stream-json events session.mjs turns into TranscriptEvents,
+// minus the CLI's own bookkeeping lines (queue-operation, ai-title, …) and
+// injected context (isMeta skill/command text, isSidechain subagent turns).
+export async function loadTranscript(dir, id) {
+  if (!/^[a-f0-9-]+$/i.test(id)) throw new Error('invalid session id');
+  const file = join(PROJECTS_DIR, encodeDir(dir), `${id}.jsonl`);
+  const body = await readFile(file, 'utf8').catch(() => '');
+  const out = [];
+
+  for (const line of body.split('\n')) {
+    if (!line) continue;
+    let e;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (e.isMeta || e.isSidechain) continue;
+    const ts = Date.parse(e.timestamp || '') || Date.now();
+
+    if (e.type === 'assistant') {
+      const content = e.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block.type === 'thinking' && block.thinking) {
+          out.push({ kind: 'thinking', text: block.thinking, ts });
+        } else if (block.type === 'text' && block.text) {
+          out.push({ kind: 'assistant_text', text: block.text, ts });
+        } else if (block.type === 'tool_use') {
+          out.push({
+            kind: 'tool_use',
+            tool: block.name,
+            toolUseId: block.id,
+            input: block.input,
+            ts,
+          });
+        }
+      }
+    } else if (e.type === 'user') {
+      const content = e.message?.content;
+      if (Array.isArray(content)) {
+        const toolResults = content.filter((b) => b.type === 'tool_result');
+        for (const b of toolResults) {
+          out.push({
+            kind: 'tool_result',
+            toolUseId: b.tool_use_id,
+            isError: !!b.is_error,
+            text: flattenToolResult(b.content),
+            ts,
+          });
+        }
+        if (toolResults.length === 0) {
+          const text = content.filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+          const images = extractImages(content);
+          if (text || images.length) out.push({ kind: 'user_text', text, images, ts });
+        }
+      } else if (typeof content === 'string' && content.trim()) {
+        out.push({ kind: 'user_text', text: content, ts });
+      }
+    }
+  }
+
+  return out.slice(-MAX_TRANSCRIPT).map((entry, seq) => ({ ...entry, seq }));
 }
 
 export async function deleteHistory(dir, id) {
