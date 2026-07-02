@@ -1,0 +1,159 @@
+import { create } from 'zustand';
+import type { SessionSummary, TranscriptEvent, ServerMessage, UsageReport } from './types';
+
+interface Store {
+  connected: boolean;
+  devRoot: string;
+  sessions: Record<string, SessionSummary>;
+  order: string[];
+  transcripts: Record<string, TranscriptEvent[]>;
+  activeId: string | null;
+  dirs: string[];
+  showNewSession: boolean;
+  showUsage: boolean;
+  usage: UsageReport | null;
+
+  setActive: (id: string) => void;
+  setShowNewSession: (v: boolean) => void;
+  setShowUsage: (v: boolean) => void;
+  handleServerMessage: (msg: ServerMessage) => void;
+  markDisconnected: () => void;
+}
+
+export const useStore = create<Store>((set, get) => ({
+  connected: false,
+  devRoot: '',
+  sessions: {},
+  order: [],
+  transcripts: {},
+  activeId: null,
+  dirs: [],
+  showNewSession: false,
+  showUsage: false,
+  usage: null,
+
+  setActive: (id) => set({ activeId: id }),
+  setShowNewSession: (v) => set({ showNewSession: v }),
+  setShowUsage: (v) => {
+    set({ showUsage: v });
+    if (v) wsSend({ type: 'get_usage' });
+  },
+  markDisconnected: () => set({ connected: false }),
+
+  handleServerMessage: (msg) => {
+    const st = get();
+    switch (msg.type) {
+      case 'hello': {
+        const sessions: Record<string, SessionSummary> = {};
+        const order: string[] = [];
+        for (const s of msg.sessions) {
+          sessions[s.id] = s;
+          order.push(s.id);
+        }
+        set({
+          connected: true,
+          devRoot: msg.devRoot,
+          sessions,
+          order,
+          activeId: st.activeId && sessions[st.activeId] ? st.activeId : order[0] ?? null,
+        });
+        // refresh backlogs after (re)connect
+        for (const id of order) wsSend({ type: 'get_backlog', id });
+        break;
+      }
+      case 'session_update': {
+        const s = msg.session;
+        if (s.state === 'closed') {
+          // closed sessions leave the rail immediately
+          set((prev) => {
+            const sessions = { ...prev.sessions };
+            delete sessions[s.id];
+            const order = prev.order.filter((x) => x !== s.id);
+            return {
+              sessions,
+              order,
+              activeId: prev.activeId === s.id ? order[0] ?? null : prev.activeId,
+            };
+          });
+          break;
+        }
+        set((prev) => ({
+          sessions: { ...prev.sessions, [s.id]: s },
+          order: prev.order.includes(s.id) ? prev.order : [...prev.order, s.id],
+          activeId: prev.activeId ?? s.id,
+        }));
+        break;
+      }
+      case 'session_event': {
+        set((prev) => {
+          const list = prev.transcripts[msg.id] ?? [];
+          return { transcripts: { ...prev.transcripts, [msg.id]: [...list, msg.event] } };
+        });
+        break;
+      }
+      case 'backlog': {
+        set((prev) => ({
+          transcripts: { ...prev.transcripts, [msg.id]: msg.events },
+        }));
+        break;
+      }
+      case 'session_removed': {
+        set((prev) => {
+          const sessions = { ...prev.sessions };
+          delete sessions[msg.id];
+          const order = prev.order.filter((x) => x !== msg.id);
+          return {
+            sessions,
+            order,
+            activeId: prev.activeId === msg.id ? order[0] ?? null : prev.activeId,
+          };
+        });
+        break;
+      }
+      case 'usage': {
+        set({ usage: msg.usage });
+        break;
+      }
+      case 'dirs': {
+        set({ dirs: msg.dirs, devRoot: msg.root });
+        break;
+      }
+      case 'error': {
+        console.error('server error:', msg.message);
+        break;
+      }
+    }
+  },
+}));
+
+// ── WebSocket client with reconnect ────────────────────────────────────────
+
+let ws: WebSocket | null = null;
+let queue: string[] = [];
+
+export function wsSend(obj: unknown) {
+  const data = JSON.stringify(obj);
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(data);
+  else queue.push(data);
+}
+
+export function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => {
+    for (const data of queue) ws!.send(data);
+    queue = [];
+    wsSend({ type: 'list_dirs' });
+  };
+  ws.onmessage = (e) => {
+    try {
+      useStore.getState().handleServerMessage(JSON.parse(e.data));
+    } catch (err) {
+      console.error('bad server message', err);
+    }
+  };
+  ws.onclose = () => {
+    useStore.getState().markDisconnected();
+    setTimeout(connect, 1500);
+  };
+}
