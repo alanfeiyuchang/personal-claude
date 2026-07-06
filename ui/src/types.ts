@@ -62,6 +62,7 @@ export interface TranscriptEvent {
   subtype?: string;
   durationMs?: number;
   costUsd?: number;
+  tokens?: number; // thinking events: estimated reasoning tokens (text is often empty)
 }
 
 export interface UsageTotals {
@@ -115,8 +116,25 @@ export interface GitInfo {
   commits?: GitCommit[];
 }
 
+export interface SkillMeta {
+  description: string;
+  source: string; // 'built-in' | 'user' | 'project' | 'plugin (…)'
+  path: string | null;
+}
+
+export interface MintyAction {
+  type: 'task' | 'focus' | 'interrupt';
+  sessionId?: string;
+  text?: string;
+}
+
+export type MintyPhase = 'idle' | 'listening' | 'thinking' | 'speaking';
+
 export type ServerMessage =
   | { type: 'hello'; sessions: SessionSummary[]; devRoot: string }
+  | { type: 'skill_meta'; reqId?: string; dir: string; skills: Record<string, SkillMeta> }
+  | { type: 'minty_say'; delta: string }
+  | { type: 'minty_reply'; say: string; action: MintyAction | null; error?: string }
   | { type: 'usage'; reqId?: string; usage: UsageReport }
   | { type: 'limits'; reqId?: string; limits: PlanLimit[] | null }
   | { type: 'session_update'; session: SessionSummary }

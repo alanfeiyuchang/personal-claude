@@ -49,6 +49,7 @@ export class ClaudeSession extends EventEmitter {
     this._interruptRequestedAt = null;
     this._interruptFallback = null;
     this._controlRequests = new Map(); // request_id → { subtype, model? }
+    this._thinkingTokens = 0;
     this.proc = null;
   }
 
@@ -250,6 +251,10 @@ export class ClaudeSession extends EventEmitter {
             claudeCodeVersion: ev.claude_code_version,
           };
           this.emit('update');
+        } else if (ev.subtype === 'thinking_tokens') {
+          // headless stream-json never sends the reasoning text itself —
+          // this running estimate is all we get until the block finalizes
+          this._thinkingTokens = ev.estimated_tokens || this._thinkingTokens;
         }
         break;
 
@@ -257,7 +262,12 @@ export class ClaudeSession extends EventEmitter {
         const content = ev.message?.content || [];
         for (const block of content) {
           if (block.type === 'thinking') {
-            this._pushTranscript({ kind: 'thinking', text: block.thinking });
+            this._pushTranscript({
+              kind: 'thinking',
+              text: block.thinking,
+              tokens: this._thinkingTokens || undefined,
+            });
+            this._thinkingTokens = 0;
             this._setState('thinking');
           } else if (block.type === 'text') {
             this._pushTranscript({ kind: 'assistant_text', text: block.text });

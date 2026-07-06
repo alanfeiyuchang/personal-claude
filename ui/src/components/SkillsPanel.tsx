@@ -1,5 +1,7 @@
-import { useState } from 'react';
-import type { SessionSummary } from '../types';
+import { useEffect, useState } from 'react';
+import { useStore, wsSend } from '../store';
+import type { SessionSummary, SkillMeta } from '../types';
+import { MintyBrain } from './MintyBrain';
 
 // Read-only v1 of the Skills & Automations panel (PLAN.md §5.3): lists what's
 // live in this session from the init event. "Create by describing" lands in a
@@ -14,6 +16,16 @@ export function SkillsPanel({
 }) {
   const info = session.initInfo;
   const [draft, setDraft] = useState('');
+  const skillMeta = useStore((s) => s.skillMeta);
+
+  useEffect(() => {
+    wsSend({ type: 'get_skill_meta', dir: session.dir });
+  }, [session.dir]);
+
+  const lookup = (name: string): SkillMeta | undefined => {
+    const key = name.replace(/^\//, '');
+    return skillMeta[key] ?? skillMeta[key.split(':').pop() ?? key];
+  };
 
   return (
     <aside className="skills glass">
@@ -46,15 +58,18 @@ export function SkillsPanel({
         <div className="skills-empty">Send a first message to load this session's context.</div>
       ) : (
         <>
-          <Section title={`Skills (${info.skills.length})`} items={info.skills} />
+          <Section title={`Skills (${info.skills.length})`} items={info.skills} lookup={lookup} />
           <Section
             title={`Slash commands (${info.slashCommands.length})`}
             items={info.slashCommands.map((c) => '/' + c)}
+            lookup={lookup}
           />
           <Section title={`Plugins (${info.plugins.length})`} items={info.plugins} />
           <Section title={`Tools (${info.tools.length})`} items={info.tools} collapsedByDefault />
         </>
       )}
+
+      <MintyBrain />
     </aside>
   );
 }
@@ -63,21 +78,50 @@ function Section({
   title,
   items,
   collapsedByDefault,
+  lookup,
 }: {
   title: string;
   items: string[];
   collapsedByDefault?: boolean;
+  lookup?: (name: string) => SkillMeta | undefined;
 }) {
+  const [selected, setSelected] = useState<string | null>(null);
+  const meta = selected && lookup ? lookup(selected) : undefined;
+
   return (
     <details className="skills-section" open={!collapsedByDefault}>
       <summary>{title}</summary>
       <div className="skills-tags">
-        {items.map((it) => (
-          <span key={it} className="tag">
-            {it}
-          </span>
-        ))}
+        {items.map((it) =>
+          lookup ? (
+            <button
+              key={it}
+              className={`tag tag-btn ${selected === it ? 'selected' : ''}`}
+              onClick={() => setSelected(selected === it ? null : it)}
+            >
+              {it}
+            </button>
+          ) : (
+            <span key={it} className="tag">
+              {it}
+            </span>
+          )
+        )}
       </div>
+      {selected && (
+        <div className="skill-detail">
+          <div className="skill-detail-name">{selected}</div>
+          <div className="skill-detail-desc">
+            {meta?.description || 'No description available — this one is built into the CLI.'}
+          </div>
+          {meta && (
+            <div className="skill-detail-source" title={meta.path ?? undefined}>
+              {meta.source}
+              {meta.path ? ` · ${meta.path.replace(/^\/Users\/[^/]+/, '~')}` : ''}
+            </div>
+          )}
+        </div>
+      )}
     </details>
   );
 }

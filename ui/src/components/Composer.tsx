@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { wsSend } from '../store';
+import { useStore, wsSend } from '../store';
 import type { ImageAttachment, SessionSummary } from '../types';
 
 interface PendingImage extends ImageAttachment {
@@ -25,6 +25,21 @@ export function Composer({ session }: { session: SessionSummary }) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const selRef = useRef<HTMLButtonElement>(null);
+
+  // Minty task hand-off: fill the box so the user sees it, then auto-send
+  const mintyTask = useStore((s) => s.mintyTask);
+  const clearMintyTask = useStore((s) => s.clearMintyTask);
+  useEffect(() => {
+    if (!mintyTask || mintyTask.sessionId !== session.id) return;
+    setText(mintyTask.text);
+    taRef.current?.focus();
+    const t = setTimeout(() => {
+      wsSend({ type: 'send', id: mintyTask.sessionId, text: mintyTask.text, images: [] });
+      setText('');
+      clearMintyTask();
+    }, 1200);
+    return () => clearTimeout(t);
+  }, [mintyTask?.nonce, session.id]);
 
   const slashCommands = session.initInfo?.slashCommands ?? [];
   const suggestions = useMemo(() => {

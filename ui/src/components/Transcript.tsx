@@ -114,11 +114,22 @@ export function Transcript({ events }: { events: TranscriptEvent[] }) {
               </div>
             );
           case 'thinking':
-            return (
+            // Claude Code's headless CLI only reports a token estimate while
+            // reasoning happens — the actual text is withheld even though a
+            // "thinking" block always arrives (empty) once it's done.
+            return ev.text ? (
               <details key={ev.seq} className="msg msg-thinking">
                 <summary>thinking</summary>
                 <div className="thinking-text">{ev.text}</div>
               </details>
+            ) : (
+              <div
+                key={ev.seq}
+                className="msg msg-thinking msg-thinking-hidden"
+                title="Claude Code's CLI doesn't expose reasoning text in this mode, only a token estimate"
+              >
+                thought{ev.tokens ? ` for ~${ev.tokens} tokens` : ''} (not shown by the CLI)
+              </div>
             );
           case 'tool_use':
             return (

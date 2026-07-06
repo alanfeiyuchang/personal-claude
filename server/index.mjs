@@ -12,6 +12,8 @@ import { ClaudeSession } from './session.mjs';
 import { collectUsage, getPlanLimits } from './usage.mjs';
 import { listHistory, deleteHistory, loadTranscript } from './history.mjs';
 import { getGitInfo } from './git.mjs';
+import { getSkillMeta } from './skills.mjs';
+import { minty } from './minty.mjs';
 
 const PORT = Number(process.env.PC_PORT || 4317);
 const HOST = '127.0.0.1';
@@ -84,24 +86,44 @@ wss.on('connection', (ws) => {
 async function handleClientMessage(ws, msg) {
   switch (msg.type) {
     case 'create': {
-      const dir = msg.dir && msg.dir.trim() ? expandHome(msg.dir.trim()) : DEV_ROOT;
-      const st = await stat(dir).catch(() => null);
-      if (!st?.isDirectory()) throw new Error(`not a directory: ${dir}`);
-      const session = new ClaudeSession({
-        name: msg.name,
-        dir,
-        model: msg.model,
-        permissionMode: msg.permissionMode,
-        resume: msg.resume,
-      });
-      if (msg.resume) {
-        session.transcript = await loadTranscript(dir, msg.resume).catch(() => []);
-      }
-      wireSession(session);
-      sessions.set(session.id, session);
-      session.start();
-      broadcast({ type: 'session_update', session: session.summary() });
+      const session = await createSession(msg);
       sendTo(ws, { type: 'created', reqId: msg.reqId, id: session.id });
+      break;
+    }
+    case 'minty': {
+      const utterance = String(msg.text ?? '').trim();
+      if (!utterance) break;
+      const entries = await readdir(DEV_ROOT, { withFileTypes: true }).catch(() => []);
+      const reply = await minty.ask(
+        utterance,
+        {
+          sessions: [...sessions.values()].map((s) => ({
+            id: s.id, name: s.name, dir: s.dir, state: s.state,
+          })),
+          devRoot: DEV_ROOT,
+          projects: entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name),
+        },
+        // stream the spoken text so the client can start TTS immediately
+        (delta) => sendTo(ws, { type: 'minty_say', delta })
+      );
+      let action = reply.action;
+      try {
+        if (action?.type === 'task' && !action.sessionId && action.newSession) {
+          const session = await createSession({ ...action.newSession, name: action.newSession.name });
+          action = { type: 'task', sessionId: session.id, text: action.text };
+        } else if (action?.type === 'task' && action.sessionId) {
+          requireSession(action.sessionId); // validate before the UI trusts it
+        } else if (action?.type === 'interrupt') {
+          requireSession(action.sessionId).interrupt();
+        } else if (action?.type === 'focus') {
+          requireSession(action.sessionId);
+        }
+      } catch (err) {
+        reply.say += ` (But I hit a snag executing that: ${err.message})`;
+        action = null;
+      }
+      // only the asking client acts on it — avoids duplicate sends from other tabs
+      sendTo(ws, { type: 'minty_reply', say: reply.say, action, error: reply.error });
       break;
     }
     case 'send': {
@@ -168,6 +190,11 @@ async function handleClientMessage(ws, msg) {
       sendTo(ws, { type: 'history', reqId: msg.reqId, dir: msg.dir, sessions: await listHistory(dir) });
       break;
     }
+    case 'get_skill_meta': {
+      const dir = expandHome(String(msg.dir || '').trim() || DEV_ROOT);
+      sendTo(ws, { type: 'skill_meta', reqId: msg.reqId, dir: msg.dir, skills: await getSkillMeta(dir) });
+      break;
+    }
     case 'list_dirs': {
       const entries = await readdir(DEV_ROOT, { withFileTypes: true }).catch(() => []);
       sendTo(ws, {
@@ -181,6 +208,27 @@ async function handleClientMessage(ws, msg) {
     default:
       throw new Error(`unknown message type: ${msg.type}`);
   }
+}
+
+async function createSession(msg) {
+  const dir = msg.dir && String(msg.dir).trim() ? expandHome(String(msg.dir).trim()) : DEV_ROOT;
+  const st = await stat(dir).catch(() => null);
+  if (!st?.isDirectory()) throw new Error(`not a directory: ${dir}`);
+  const session = new ClaudeSession({
+    name: msg.name,
+    dir,
+    model: msg.model,
+    permissionMode: msg.permissionMode,
+    resume: msg.resume,
+  });
+  if (msg.resume) {
+    session.transcript = await loadTranscript(dir, msg.resume).catch(() => []);
+  }
+  wireSession(session);
+  sessions.set(session.id, session);
+  session.start();
+  broadcast({ type: 'session_update', session: session.summary() });
+  return session;
 }
 
 function requireSession(id) {
@@ -220,6 +268,7 @@ httpServer.listen(PORT, HOST, () => {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     for (const s of sessions.values()) s.stop();
+    minty.stop();
     httpServer.close();
     setTimeout(() => process.exit(0), 500).unref();
   });

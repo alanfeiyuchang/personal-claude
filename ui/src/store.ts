@@ -7,6 +7,8 @@ import type {
   PlanLimit,
   HistorySession,
   GitInfo,
+  SkillMeta,
+  MintyPhase,
 } from './types';
 
 interface Store {
@@ -23,6 +25,14 @@ interface Store {
   limits: PlanLimit[] | null;
   history: { dir: string; sessions: HistorySession[] } | null;
   git: { dir: string; info: GitInfo } | null;
+  skillMeta: Record<string, SkillMeta>;
+  minty: { phase: MintyPhase; transcript: string; say: string; stream: string; done: boolean };
+  mintyTask: { sessionId: string; text: string; nonce: number } | null;
+
+  setMinty: (
+    patch: Partial<{ phase: MintyPhase; transcript: string; say: string; stream: string; done: boolean }>
+  ) => void;
+  clearMintyTask: () => void;
 
   setActive: (id: string) => void;
   setShowNewSession: (v: boolean) => void;
@@ -45,6 +55,12 @@ export const useStore = create<Store>((set, get) => ({
   limits: null,
   history: null,
   git: null,
+  skillMeta: {},
+  minty: { phase: 'idle', transcript: '', say: '', stream: '', done: false },
+  mintyTask: null,
+
+  setMinty: (patch) => set((prev) => ({ minty: { ...prev.minty, ...patch } })),
+  clearMintyTask: () => set({ mintyTask: null }),
 
   setActive: (id) => set({ activeId: id }),
   setShowNewSession: (v) => set({ showNewSession: v }),
@@ -142,6 +158,31 @@ export const useStore = create<Store>((set, get) => ({
       }
       case 'git_info': {
         set({ git: { dir: msg.dir, info: msg.info } });
+        break;
+      }
+      case 'skill_meta': {
+        // merge: bare-name entries from one dir stay useful across sessions
+        set((prev) => ({ skillMeta: { ...prev.skillMeta, ...msg.skills } }));
+        break;
+      }
+      case 'minty_say': {
+        set((prev) => ({
+          minty: { ...prev.minty, phase: 'speaking', stream: prev.minty.stream + msg.delta },
+        }));
+        break;
+      }
+      case 'minty_reply': {
+        set((prev) => ({ minty: { ...prev.minty, phase: 'speaking', say: msg.say, done: true } }));
+        const a = msg.action;
+        if (a?.type === 'focus' && a.sessionId) set({ activeId: a.sessionId });
+        if (a?.type === 'task' && a.sessionId && a.text) {
+          // focus the target session; Composer picks this up, fills the box,
+          // and auto-sends — the "types it for you" moment
+          set({
+            activeId: a.sessionId,
+            mintyTask: { sessionId: a.sessionId, text: a.text, nonce: Date.now() },
+          });
+        }
         break;
       }
       case 'created': {
