@@ -57,23 +57,20 @@ export default function App() {
       <Particles state={session?.state ?? 'idle'} />
       {limitExceeded && <div className="limit-glow" aria-hidden="true" />}
 
-      <div className="tab-dock">
-        <div className="tab-dock-veil" aria-hidden="true" />
-        <nav className="tabbar">
-          <button
-            className={`tab ${activeTab === 'claude' ? 'active' : ''}`}
-            onClick={() => setActiveTab('claude')}
-          >
-            Claude
-          </button>
-          <button
-            className={`tab ${activeTab === 'graphify' ? 'active' : ''}`}
-            onClick={() => setActiveTab('graphify')}
-          >
-            Graphify
-          </button>
-        </nav>
-      </div>
+      <nav className="tabbar">
+        <button
+          className={`tab ${activeTab === 'claude' ? 'active' : ''}`}
+          onClick={() => setActiveTab('claude')}
+        >
+          Claude
+        </button>
+        <button
+          className={`tab ${activeTab === 'graphify' ? 'active' : ''}`}
+          onClick={() => setActiveTab('graphify')}
+        >
+          Graphify
+        </button>
+      </nav>
 
       {activeTab === 'claude' ? (
         <div className="app">

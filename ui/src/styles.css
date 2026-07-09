@@ -41,34 +41,14 @@ body {
   position: relative;
 }
 
-/* floating overlap layer: sits above everything else, top-center, and
-   fades into the content behind it instead of occupying its own row */
-.tab-dock {
+/* floating overlap layer: sits above everything else, top-center,
+   instead of occupying its own row */
+.tabbar {
   position: fixed;
   top: 14px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 30;
-  display: flex;
-}
-
-/* a wider blurred veil behind the pill, with its own alpha faded out via
-   mask-image — the blur itself dissolves at the edges instead of being
-   cut off by a hard rectangle, so the dock blends into whatever scrolls
-   underneath it */
-.tab-dock-veil {
-  position: absolute;
-  inset: -34px -70px;
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
-  mask-image: radial-gradient(ellipse 65% 60% at center, black 30%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 65% 60% at center, black 30%, transparent 100%);
-  pointer-events: none;
-}
-
-.tabbar {
-  position: relative;
-  z-index: 1;
   display: flex;
   gap: 4px;
   padding: 5px;
