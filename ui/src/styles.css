@@ -32,13 +32,278 @@ body {
   overflow: hidden;
 }
 
+/* ── top-level tab shell ──────────────────────── */
+
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+}
+
+/* floating overlap layer: sits above everything else, top-center, and
+   fades into the content behind it instead of occupying its own row */
+.tab-dock {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+}
+
+/* a wider blurred veil behind the pill, with its own alpha faded out via
+   mask-image — the blur itself dissolves at the edges instead of being
+   cut off by a hard rectangle, so the dock blends into whatever scrolls
+   underneath it */
+.tab-dock-veil {
+  position: absolute;
+  inset: -34px -70px;
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  mask-image: radial-gradient(ellipse 65% 60% at center, black 30%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 65% 60% at center, black 30%, transparent 100%);
+  pointer-events: none;
+}
+
+.tabbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 4px;
+  padding: 5px;
+  border-radius: 999px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+  padding: 6px 18px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 4px 16px rgba(139, 124, 246, 0.35);
+}
+
 .app {
   display: grid;
   grid-template-columns: var(--rail-w, 220px) minmax(0, 1fr) 280px;
   gap: 14px;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   padding: 14px;
   position: relative;
+}
+
+/* ── graphify tab ─────────────────────────────── */
+
+.graphify {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  position: relative;
+  z-index: 1;
+}
+
+.graphify-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.graphify-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 12px;
+}
+
+.graphify-list-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 10px;
+  border-bottom: 1px solid var(--panel-border);
+  margin-bottom: 8px;
+}
+
+.graphify-list-scroll {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.graphify-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.graphify-item:hover {
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.graphify-item.active {
+  background: rgba(139, 124, 246, 0.16);
+}
+
+.graphify-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(148, 163, 184, 0.35);
+  flex: none;
+}
+
+.graphify-dot.on {
+  background: var(--accent-2);
+  box-shadow: 0 0 8px var(--accent-2);
+}
+
+.graphify-item-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graphify-item-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  flex: none;
+}
+
+.graphify-item-meta.dim {
+  opacity: 0.5;
+}
+
+.graphify-main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.graphify-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+}
+
+.graphify-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.graphify-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.graphify-stats {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.graphify-stats.dim {
+  opacity: 0.75;
+}
+
+.graphify-root {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graphify-error {
+  color: var(--danger);
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.graphify-canvas {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+.graphify-frame {
+  border: none;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.graphify-empty {
+  margin: auto;
+  max-width: 440px;
+  text-align: center;
+  padding: 40px;
+  color: var(--text-dim);
+}
+
+.graphify-empty h2 {
+  color: var(--text);
+  margin: 0 0 12px;
+}
+
+.graphify-empty p {
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+
+.graphify-building {
+  color: var(--accent-2);
 }
 
 /* grid/flex children default to min-size:auto, which lets long content
@@ -694,61 +959,13 @@ body {
   font-size: 12px;
 }
 
+/* single info line: state, permission mode, model, dir, tokens, cost */
 .hud {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 12px 16px;
-}
-
-.hud-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 1 0 100%; /* own row above hud-state/hud-meta */
-}
-
-.hud-name {
-  font-size: 15px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 480px;
-}
-
-.hud-name-input {
-  font-size: 15px;
-  font-weight: 600;
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.25);
-  color: var(--text);
-  padding: 1px 6px;
-  font-family: inherit;
-  min-width: 200px;
-}
-
-.hud-rename-btn {
-  border: none;
-  background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 2px 4px;
-  border-radius: 6px;
-  opacity: 0;
-}
-
-.hud-title:hover .hud-rename-btn {
-  opacity: 1;
-}
-
-.hud-rename-btn:hover {
-  color: var(--text);
-  background: rgba(148, 163, 184, 0.1);
+  gap: 10px;
+  padding: 9px 16px;
 }
 
 .hud-state {
@@ -756,6 +973,7 @@ body {
   align-items: center;
   gap: 8px;
   font-weight: 600;
+  flex-shrink: 0;
 }
 
 .hud-tool,
@@ -764,18 +982,15 @@ body {
   font-weight: 400;
 }
 
-.hud-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.hud-interrupt {
+  margin-left: auto;
 }
 
 .hud-dir {
   color: var(--text-dim);
   font-family: var(--mono);
   font-size: 12px;
-  max-width: 260px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1180,8 +1395,17 @@ body {
 
 .skills {
   z-index: 1;
-  padding: 14px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* everything except Minty scrolls here — Minty stays pinned below */
+.skills-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  padding: 14px;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -1432,13 +1656,12 @@ body {
 /* ── Minty (voice assistant) ──────────────────── */
 
 .minty-dock {
-  margin-top: auto;
-  padding-top: 12px;
+  flex-shrink: 0;
+  padding: 12px 14px 14px;
   border-top: 1px solid var(--panel-border);
   display: flex;
   flex-direction: column;
   gap: 6px;
-  flex-shrink: 0;
 }
 
 .minty-phase {
@@ -1506,4 +1729,80 @@ body {
 
 .minty-lang:hover {
   background: rgba(52, 211, 153, 0.18);
+}
+
+/* ── automations (one-click actions above Minty) ── */
+
+.automation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 0;
+}
+
+.automation-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.05);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.automation-item:hover:not(:disabled) {
+  border-color: rgba(139, 124, 246, 0.45);
+  background: rgba(139, 124, 246, 0.1);
+}
+
+.automation-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.automation-item.ran {
+  border-color: rgba(52, 211, 153, 0.55);
+  background: rgba(52, 211, 153, 0.1);
+}
+
+.automation-icon {
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.automation-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.automation-name {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.automation-desc {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.automation-go {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+.automation-item.ran .automation-go {
+  color: #34d399;
 }

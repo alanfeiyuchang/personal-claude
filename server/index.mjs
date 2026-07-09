@@ -14,6 +14,7 @@ import { listHistory, deleteHistory, loadTranscript } from './history.mjs';
 import { getGitInfo } from './git.mjs';
 import { getSkillMeta } from './skills.mjs';
 import { minty } from './minty.mjs';
+import { graphifyStatus, rebuildGraph, GRAPHIFY_OUT } from './graphify.mjs';
 
 const PORT = Number(process.env.PC_PORT || 4317);
 const HOST = '127.0.0.1';
@@ -41,6 +42,41 @@ const clients = new Set();
 const httpServer = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
+
+    // ── Graphify API + static graph output ─────────────────────────────────
+    if (url.pathname === '/graphify/status') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(await graphifyStatus()));
+      return;
+    }
+    if (url.pathname === '/graphify/rebuild') {
+      if (req.method !== 'POST') {
+        res.writeHead(405).end();
+        return;
+      }
+      try {
+        const status = await rebuildGraph(url.searchParams.get('project'));
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, status }));
+      } catch (err) {
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+    if (url.pathname.startsWith('/graphify-out/')) {
+      const rel = url.pathname.slice('/graphify-out/'.length);
+      const gfile = resolve(GRAPHIFY_OUT, rel);
+      if (!gfile.startsWith(GRAPHIFY_OUT) || !existsSync(gfile)) {
+        res.writeHead(404).end();
+        return;
+      }
+      const body = await readFile(gfile);
+      const type = MIME[extname(gfile)] || 'application/octet-stream';
+      res.writeHead(200, { 'content-type': type }).end(body);
+      return;
+    }
+
     let path = url.pathname === '/' ? '/index.html' : url.pathname;
     const file = resolve(UI_DIST, '.' + path);
     if (!file.startsWith(UI_DIST)) {

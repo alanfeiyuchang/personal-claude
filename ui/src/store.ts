@@ -11,8 +11,11 @@ import type {
   MintyPhase,
 } from './types';
 
+export type Tab = 'claude' | 'graphify';
+
 interface Store {
   connected: boolean;
+  activeTab: Tab;
   devRoot: string;
   sessions: Record<string, SessionSummary>;
   order: string[];
@@ -34,6 +37,7 @@ interface Store {
   ) => void;
   clearMintyTask: () => void;
 
+  setActiveTab: (t: Tab) => void;
   setActive: (id: string) => void;
   setShowNewSession: (v: boolean) => void;
   setShowUsage: (v: boolean) => void;
@@ -43,6 +47,7 @@ interface Store {
 
 export const useStore = create<Store>((set, get) => ({
   connected: false,
+  activeTab: 'claude',
   devRoot: '',
   sessions: {},
   order: [],
@@ -62,6 +67,7 @@ export const useStore = create<Store>((set, get) => ({
   setMinty: (patch) => set((prev) => ({ minty: { ...prev.minty, ...patch } })),
   clearMintyTask: () => set({ mintyTask: null }),
 
+  setActiveTab: (t) => set({ activeTab: t }),
   setActive: (id) => set({ activeId: id }),
   setShowNewSession: (v) => set({ showNewSession: v }),
   setShowUsage: (v) => {

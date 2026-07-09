@@ -90,28 +90,29 @@ export function MintyBrain() {
     }
   };
 
-  const speakChunk = (text: string) => {
-    const t = text.trim();
-    if (!t) return;
-    const u = new SpeechSynthesisUtterance(t);
-    const voices = speechSynthesis.getVoices();
-    // pick the voice per chunk: Chinese voices read mixed 中英 sentences well
-    const hasCJK = /[㐀-䶿一-鿿豈-﫿]/.test(t);
-    if (hasCJK) {
-      u.lang = 'zh-CN';
-      u.voice =
-        voices.find((v) => v.name === 'Tingting') ??
+  const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+  // a run of CJK text (with its adjoining CJK punctuation) or a run of
+  // everything else -- splitting on these boundaries is what lets one
+  // code-switched sentence get read by two different voices in turn
+  const RUN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff0c\u3002\uff01\uff1f\uff1b\uff1a\u3001\u201c\u201d\u2018\u2019]+|[^\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/g;
+
+  const pickVoice = (isCJK: boolean, voices: SpeechSynthesisVoice[]) =>
+    isCJK
+      ? (voices.find((v) => v.name === 'Tingting') ??
         voices.find((v) => v.lang.replace('_', '-').startsWith('zh') && v.localService) ??
         voices.find((v) => v.lang.replace('_', '-').startsWith('zh')) ??
-        null;
-    } else {
-      u.lang = 'en-US';
-      u.voice =
-        voices.find((v) => v.name === 'Samantha') ??
+        null)
+      : (voices.find((v) => v.name === 'Samantha') ??
         voices.find((v) => v.lang.startsWith('en') && v.localService) ??
         voices.find((v) => v.lang.startsWith('en')) ??
-        null;
-    }
+        null);
+
+  const speakRun = (run: string, isCJK: boolean, voices: SpeechSynthesisVoice[]) => {
+    const r = run.trim();
+    if (!r) return;
+    const u = new SpeechSynthesisUtterance(r);
+    u.lang = isCJK ? 'zh-CN' : 'en-US';
+    u.voice = pickVoice(isCJK, voices);
     u.rate = 1.05;
     activeUtterRef.current++;
     u.onstart = () => {
@@ -127,6 +128,17 @@ export function MintyBrain() {
       maybeIdle();
     };
     speechSynthesis.speak(u); // utterances queue natively, in order
+  };
+
+  const speakChunk = (text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    const voices = speechSynthesis.getVoices();
+    // split code-switched text (e.g. "这个 API 的 rate limit 是多少") into
+    // per-script runs so each run is spoken in its own language's voice,
+    // instead of reading the whole sentence in whichever voice matched first
+    const runs = t.match(RUN_RE) || [t];
+    for (const run of runs) speakRun(run, CJK_RE.test(run), voices);
   };
 
   const submit = (text: string) => {
