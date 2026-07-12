@@ -57,6 +57,13 @@ export function Composer({ session }: { session: SessionSummary }) {
     selRef.current?.scrollIntoView({ block: 'nearest' });
   }, [selIdx]);
 
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = 'auto';
+    ta.style.height = `${ta.scrollHeight}px`;
+  }, [text]);
+
   const bumpUsage = (cmd: string) => {
     const next = { ...loadUsage(), [cmd]: (loadUsage()[cmd] || 0) + 1 };
     localStorage.setItem(USAGE_KEY, JSON.stringify(next));
@@ -216,7 +223,7 @@ export function Composer({ session }: { session: SessionSummary }) {
           }}
           onPaste={onPaste}
           onKeyDown={onKeyDown}
-          rows={Math.min(8, Math.max(1, text.split('\n').length))}
+          rows={1}
         />
         <button
           className="btn btn-primary send-btn"
