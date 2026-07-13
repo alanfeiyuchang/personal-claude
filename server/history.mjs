@@ -1,14 +1,41 @@
 // Past Claude Code sessions (transcripts under ~/.claude/projects) —
 // listed for the "continue a previous session" flow, deletable for good.
 
-import { readdir, stat, rm, open, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readdir, stat, rm, open, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import os from 'node:os';
 
 const PROJECTS_DIR = join(os.homedir(), '.claude', 'projects');
 const LIST_LIMIT = 20;
 const HEAD_BYTES = 64 * 1024;
 const MAX_TRANSCRIPT = 5000; // mirrors the live-session cap in session.mjs
+
+// User-given session names (SessionRail rename), keyed by dir → transcript
+// id. Kept separately from the .jsonl transcripts since those belong to the
+// `claude` CLI, not us — this is the one bit of session metadata we own.
+const NAMES_FILE = join(os.homedir(), '.cache', 'personal-claude', 'session-names.json');
+
+async function loadNames() {
+  try {
+    return JSON.parse(await readFile(NAMES_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+async function saveNames(map) {
+  await mkdir(dirname(NAMES_FILE), { recursive: true });
+  await writeFile(NAMES_FILE, JSON.stringify(map));
+}
+
+export async function saveSessionName(dir, id, name) {
+  const trimmed = typeof name === 'string' ? name.trim() : '';
+  if (!trimmed || !id) return;
+  const map = await loadNames();
+  map[dir] = map[dir] || {};
+  map[dir][id] = trimmed;
+  await saveNames(map);
+}
 
 // the CLI names a project's transcript dir by replacing every
 // non-alphanumeric char of the cwd with '-'
@@ -64,11 +91,13 @@ export async function listHistory(dir) {
     if (st) files.push({ id: name.slice(0, -'.jsonl'.length), mtime: st.mtimeMs });
   }
   files.sort((a, b) => b.mtime - a.mtime);
+  const customNames = (await loadNames())[dir] || {};
   return Promise.all(
     files.slice(0, LIST_LIMIT).map(async (f) => ({
       id: f.id,
       mtime: f.mtime,
       label:
+        customNames[f.id] ||
         (await extractLabel(join(projDir, `${f.id}.jsonl`)).catch(() => null)) ||
         f.id.slice(0, 8),
     }))
@@ -161,4 +190,10 @@ export async function deleteHistory(dir, id) {
   // ids are UUID filenames; reject anything that could escape the project dir
   if (!/^[a-f0-9-]+$/i.test(id)) throw new Error('invalid session id');
   await rm(join(PROJECTS_DIR, encodeDir(dir), `${id}.jsonl`));
+  const map = await loadNames();
+  if (map[dir]?.[id]) {
+    delete map[dir][id];
+    if (Object.keys(map[dir]).length === 0) delete map[dir];
+    await saveNames(map);
+  }
 }

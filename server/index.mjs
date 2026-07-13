@@ -10,7 +10,7 @@ import os from 'node:os';
 import { WebSocketServer } from 'ws';
 import { ClaudeSession } from './session.mjs';
 import { collectUsage, getPlanLimits } from './usage.mjs';
-import { listHistory, deleteHistory, loadTranscript } from './history.mjs';
+import { listHistory, deleteHistory, loadTranscript, saveSessionName } from './history.mjs';
 import { getGitInfo } from './git.mjs';
 import { getSkillMeta } from './skills.mjs';
 import { minty } from './minty.mjs';
@@ -170,7 +170,13 @@ async function handleClientMessage(ws, msg) {
       break;
     }
     case 'rename': {
-      requireSession(msg.id).rename(String(msg.name ?? ''));
+      const session = requireSession(msg.id);
+      session.rename(String(msg.name ?? ''));
+      // the CLI hasn't assigned this session an id yet (no first turn sent);
+      // wireSession's 'claude-session-id' listener persists it once it does
+      if (session.claudeSessionId) {
+        await saveSessionName(session.dir, session.claudeSessionId, session.name);
+      }
       break;
     }
     case 'set_model': {
@@ -284,6 +290,12 @@ function wireSession(session) {
   session.on('transcript', (entry) =>
     broadcast({ type: 'session_event', id: session.id, event: entry })
   );
+  // a rename that happened before the CLI assigned this session an id
+  // (e.g. renamed before the first message was sent) couldn't be persisted
+  // yet — do it now that we have the id the history list keys off of
+  session.on('claude-session-id', (claudeSessionId) => {
+    if (session.renamed) saveSessionName(session.dir, claudeSessionId, session.name).catch(() => {});
+  });
 }
 
 function expandHome(p) {

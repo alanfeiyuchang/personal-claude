@@ -34,6 +34,7 @@ export class ClaudeSession extends EventEmitter {
 
     this.state = 'starting';
     this.claudeSessionId = null;
+    this.renamed = false; // true once the user has explicitly renamed this session
     this.initInfo = null; // tools, slash_commands, skills, plugins, model
     this.currentTool = null;
     this.turnStartedAt = null;
@@ -140,6 +141,7 @@ export class ClaudeSession extends EventEmitter {
     const trimmed = typeof name === 'string' ? name.trim() : '';
     if (!trimmed) throw new Error('invalid name');
     this.name = trimmed;
+    this.renamed = true;
     this.emit('update');
   }
 
@@ -267,6 +269,10 @@ export class ClaudeSession extends EventEmitter {
             claudeCodeVersion: ev.claude_code_version,
           };
           this.emit('update');
+          // the CLI's own session id — and thus the transcript filename the
+          // "continue a previous session" history reads — is only known from
+          // here on, so this is the earliest a pending rename can be persisted
+          this.emit('claude-session-id', this.claudeSessionId);
         } else if (ev.subtype === 'thinking_tokens') {
           // headless stream-json never sends the reasoning text itself —
           // this running estimate is all we get until the block finalizes
