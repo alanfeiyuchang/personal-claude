@@ -50,6 +50,8 @@ export class ClaudeSession extends EventEmitter {
     this._interruptFallback = null;
     this._controlRequests = new Map(); // request_id → { subtype, model? }
     this._thinkingTokens = 0;
+    this._contextProbe = false;
+    this.contextInfo = null; // { usedTokens, windowTokens, percent, updatedAt } from the last /context probe
     this.proc = null;
   }
 
@@ -156,6 +158,19 @@ export class ClaudeSession extends EventEmitter {
     this.proc.stdin.write(JSON.stringify(req) + '\n');
   }
 
+  // Asks the CLI's own `/context` slash command for the real per-model context
+  // window and current usage — it's handled locally by the CLI (no API call,
+  // no cost) rather than sent to the model, so it's cheap to poll.
+  requestContext() {
+    if (!this.proc || this.proc.exitCode !== null) return;
+    if (this._contextProbe) return; // one in flight at a time
+    if (this.state !== 'idle' && this.state !== 'waiting_input' && this.state !== 'done') return;
+    const msg = { type: 'user', message: { role: 'user', content: '/context' } };
+    this.proc.stdin.write(JSON.stringify(msg) + '\n');
+    this._contextProbe = true;
+    this._setState('thinking');
+  }
+
   interrupt() {
     if (!this.proc || this.proc.exitCode !== null) return;
     // SDK-style control request; SIGINT only if the CLI never acknowledges it.
@@ -213,6 +228,7 @@ export class ClaudeSession extends EventEmitter {
       totals: this.totals,
       lastError: this.lastError,
       initInfo: this.initInfo,
+      contextInfo: this.contextInfo,
     };
   }
 
@@ -259,6 +275,11 @@ export class ClaudeSession extends EventEmitter {
         break;
 
       case 'assistant': {
+        if (this._contextProbe) {
+          const text = (ev.message?.content || []).find((b) => b.type === 'text')?.text || '';
+          this._applyContextProbe(text);
+          break;
+        }
         const content = ev.message?.content || [];
         for (const block of content) {
           if (block.type === 'thinking') {
@@ -316,6 +337,11 @@ export class ClaudeSession extends EventEmitter {
       }
 
       case 'result': {
+        if (this._contextProbe) {
+          this._contextProbe = false;
+          this._setState('idle');
+          break;
+        }
         this.totals.turns += ev.num_turns || 1;
         if (typeof ev.total_cost_usd === 'number') this.totals.costUsd += ev.total_cost_usd;
         this.currentTool = null;
@@ -373,6 +399,26 @@ export class ClaudeSession extends EventEmitter {
 
       default:
         break; // rate_limit_event, thinking_tokens ticks, …
+    }
+  }
+
+  // Parses the CLI's "## Context Usage\n\n**Model:** …\n**Tokens:** 20.9k / 967k (2%)"
+  // reply from `/context` into real numbers instead of the 200k guess we had
+  // no way to verify — this window changes per model/plan (1M-context beta etc).
+  _applyContextProbe(text) {
+    const m = text.match(/\*\*Tokens:\*\*\s*([\d.]+)(k|M)?\s*\/\s*([\d.]+)(k|M)?\s*\(([\d.]+)%\)/i);
+    if (m) {
+      const scale = (suffix) => {
+        const s = (suffix || '').toLowerCase();
+        return s === 'm' ? 1_000_000 : s === 'k' ? 1_000 : 1;
+      };
+      this.contextInfo = {
+        usedTokens: Math.round(parseFloat(m[1]) * scale(m[2])),
+        windowTokens: Math.round(parseFloat(m[3]) * scale(m[4])),
+        percent: parseFloat(m[5]),
+        updatedAt: Date.now(),
+      };
+      this.emit('update');
     }
   }
 

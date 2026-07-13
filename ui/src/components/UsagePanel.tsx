@@ -1,5 +1,5 @@
 import { useStore, wsSend } from '../store';
-import type { PlanLimit, UsageBucket, UsageTotals } from '../types';
+import type { PlanLimit, SessionSummary, UsageBucket } from '../types';
 
 function fmt(n: number) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
@@ -9,6 +9,12 @@ function fmt(n: number) {
 
 function shortModel(m: string) {
   return m.replace(/^claude-/, '').replace(/-\d{8}$/, '');
+}
+
+function contextColor(percent: number) {
+  if (percent >= 90) return '#fb7185';
+  if (percent >= 75) return '#fbbf24';
+  return undefined;
 }
 
 function limitLabel(l: PlanLimit) {
@@ -70,7 +76,50 @@ function PlanLimits({ limits }: { limits: PlanLimit[] }) {
   );
 }
 
-function Bucket({ title, hint, bucket }: { title: string; hint: string; bucket: UsageBucket }) {
+function ContextUsage({ sessions }: { sessions: SessionSummary[] }) {
+  return (
+    <section className="usage-bucket">
+      <header>
+        <span className="usage-title">Context window</span>
+        <span className="usage-hint">live from each session's /context — real per-model window</span>
+      </header>
+      {sessions.length === 0 && <div className="usage-empty">no open sessions</div>}
+      {sessions.map((s) => {
+        const ctx = s.contextInfo;
+        return (
+          <div key={s.id} className="usage-row">
+            <span className="usage-model limit-label" title={s.dir}>
+              {s.name || s.dir.split('/').filter(Boolean).pop() || s.dir}
+            </span>
+            {!ctx ? (
+              <span className="usage-empty" style={{ flex: 1, padding: 0 }}>
+                not probed yet
+              </span>
+            ) : (
+              <>
+                <div className="usage-bar">
+                  <div
+                    className="usage-bar-fill"
+                    style={{
+                      width: `${Math.min(100, ctx.percent)}%`,
+                      ...(contextColor(ctx.percent) ? { background: contextColor(ctx.percent) } : {}),
+                    }}
+                  />
+                </div>
+                <span className="usage-nums limit-nums">
+                  {Math.round(ctx.percent)}% · {fmt(ctx.usedTokens)} / {fmt(ctx.windowTokens)}
+                </span>
+              </>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+function BlockUsage({ bucket }: { bucket: UsageBucket | null }) {
+  if (!bucket) return <div className="usage-empty">loading…</div>;
   const models = Object.entries(bucket.byModel).sort(
     (a, b) => b[1].input + b[1].output - (a[1].input + a[1].output)
   );
@@ -78,8 +127,8 @@ function Bucket({ title, hint, bucket }: { title: string; hint: string; bucket: 
   return (
     <section className="usage-bucket">
       <header>
-        <span className="usage-title">{title}</span>
-        <span className="usage-hint">{hint}</span>
+        <span className="usage-title">Last 5 hours</span>
+        <span className="usage-hint">≈ current plan rate-limit block</span>
       </header>
       <div className="usage-totals">
         <span>⬇ {fmt(bucket.input + bucket.cacheCreation)} in</span>
@@ -89,7 +138,7 @@ function Bucket({ title, hint, bucket }: { title: string; hint: string; bucket: 
         {bucket.costUsd > 0 && <span>${bucket.costUsd.toFixed(2)}</span>}
       </div>
       {models.length === 0 && <div className="usage-empty">no activity</div>}
-      {models.map(([model, t]: [string, UsageTotals]) => (
+      {models.map(([model, t]) => (
         <div key={model} className="usage-row">
           <span className="usage-model">{shortModel(model)}</span>
           <div className="usage-bar">
@@ -108,7 +157,9 @@ function Bucket({ title, hint, bucket }: { title: string; hint: string; bucket: 
 }
 
 export function UsagePanel() {
-  const usage = useStore((s) => s.usage);
+  const limits = useStore((s) => s.limits);
+  const usageBlock = useStore((s) => s.usageBlock);
+  const sessions = useStore((s) => s.order.map((id) => s.sessions[id]).filter(Boolean));
   const setShowUsage = useStore((s) => s.setShowUsage);
 
   return (
@@ -116,28 +167,23 @@ export function UsagePanel() {
       <div className="modal glass usage-modal" onClick={(e) => e.stopPropagation()}>
         <div className="usage-head">
           <h2>Claude usage</h2>
-          <button className="btn" onClick={() => wsSend({ type: 'get_usage' })}>
+          <button
+            className="btn"
+            onClick={() => {
+              wsSend({ type: 'get_usage' });
+              for (const s of sessions) wsSend({ type: 'get_context', id: s.id });
+            }}
+          >
             ↻ Refresh
           </button>
         </div>
-        <p className="usage-note">
-          Aggregated from local Claude Code transcripts (~/.claude/projects) across all
-          projects and sessions — in / out tokens per model.
-        </p>
-        {!usage ? (
-          <div className="usage-empty">loading…</div>
+        {!limits ? (
+          <div className="usage-empty">loading plan limits…</div>
         ) : (
-          <>
-            {usage.limits && usage.limits.length > 0 && <PlanLimits limits={usage.limits} />}
-            <Bucket
-              title="Last 5 hours"
-              hint="≈ current plan rate-limit block"
-              bucket={usage.windows.block}
-            />
-            <Bucket title="Today" hint="since midnight" bucket={usage.windows.today} />
-            <Bucket title="Last 7 days" hint="" bucket={usage.windows.week} />
-          </>
+          limits.length > 0 && <PlanLimits limits={limits} />
         )}
+        <ContextUsage sessions={sessions} />
+        <BlockUsage bucket={usageBlock} />
         <div className="modal-actions">
           <button className="btn" onClick={() => setShowUsage(false)}>
             Close
