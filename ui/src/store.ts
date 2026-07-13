@@ -3,8 +3,8 @@ import type {
   SessionSummary,
   TranscriptEvent,
   ServerMessage,
+  UsageReport,
   PlanLimit,
-  UsageBucket,
   HistorySession,
   GitInfo,
   SkillMeta,
@@ -24,8 +24,8 @@ interface Store {
   dirs: string[];
   showNewSession: boolean;
   showUsage: boolean;
+  usage: UsageReport | null;
   limits: PlanLimit[] | null;
-  usageBlock: UsageBucket | null; // last-5-hours window, shown at the bottom of the usage panel
   history: { dir: string; sessions: HistorySession[] } | null;
   git: { dir: string; info: GitInfo } | null;
   skillMeta: Record<string, SkillMeta>;
@@ -56,8 +56,8 @@ export const useStore = create<Store>((set, get) => ({
   dirs: [],
   showNewSession: false,
   showUsage: false,
+  usage: null,
   limits: null,
-  usageBlock: null,
   history: null,
   git: null,
   skillMeta: {},
@@ -72,10 +72,7 @@ export const useStore = create<Store>((set, get) => ({
   setShowNewSession: (v) => set({ showNewSession: v }),
   setShowUsage: (v) => {
     set({ showUsage: v });
-    if (v) {
-      wsSend({ type: 'get_usage' });
-      for (const id of get().order) wsSend({ type: 'get_context', id });
-    }
+    if (v) wsSend({ type: 'get_usage' });
   },
   markDisconnected: () => set({ connected: false }),
 
@@ -153,15 +150,12 @@ export const useStore = create<Store>((set, get) => ({
         });
         break;
       }
-      case 'limits': {
-        if (msg.limits) set({ limits: msg.limits });
+      case 'usage': {
+        set({ usage: msg.usage, ...(msg.usage.limits ? { limits: msg.usage.limits } : {}) });
         break;
       }
-      case 'usage': {
-        set({
-          usageBlock: msg.usage.windows.block,
-          ...(msg.usage.limits ? { limits: msg.usage.limits } : {}),
-        });
+      case 'limits': {
+        if (msg.limits) set({ limits: msg.limits });
         break;
       }
       case 'history': {

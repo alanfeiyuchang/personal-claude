@@ -35,12 +35,6 @@ export interface SessionSummary {
   totals: { costUsd: number; inputTokens: number; outputTokens: number; turns: number };
   lastError: string | null;
   initInfo: InitInfo | null;
-  contextInfo: {
-    usedTokens: number;
-    windowTokens: number;
-    percent: number;
-    updatedAt: number;
-  } | null;
 }
 
 export interface ImageAttachment {

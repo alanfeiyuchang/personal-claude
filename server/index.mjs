@@ -181,10 +181,6 @@ async function handleClientMessage(ws, msg) {
       requireSession(msg.id).interrupt();
       break;
     }
-    case 'get_context': {
-      requireSession(msg.id).requestContext();
-      break;
-    }
     case 'remove': {
       const s = sessions.get(msg.id);
       if (s) {
