@@ -254,6 +254,19 @@ export function MintyBrain() {
     return { ctx: playCtxRef.current!, analyser: analyserRef.current! };
   };
 
+  // Browsers only let an AudioContext produce sound if it's created/resumed
+  // from directly inside a user-gesture handler — the mic's recording
+  // context already gets this (see rec.ctx.resume() in startListening).
+  // The playback context didn't: it was first created deep inside the async
+  // fetch/stream chain in scheduleChunk, long after any gesture, so it sat
+  // permanently 'suspended' — src.start() ran without error but produced no
+  // sound at all. Call this synchronously at the top of every gesture that
+  // can lead to a spoken reply (click, Space, typed Enter).
+  const primePlayCtx = () => {
+    const { ctx } = ensurePlayCtx();
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+  };
+
   const meterTick = () => {
     const analyser = analyserRef.current;
     if (!analyser) return;
@@ -435,6 +448,7 @@ export function MintyBrain() {
   }, [transcribeResult]);
 
   const startListening = async () => {
+    primePlayCtx(); // must run synchronously within this gesture — see comment above
     try {
       // reuse the already-warm graph if we have one; only the very first
       // call in the session pays for getUserMedia + AudioContext setup
@@ -598,6 +612,7 @@ export function MintyBrain() {
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && typed.trim()) {
+              primePlayCtx(); // mic-less path never calls startListening(), so prime here instead
               submit(typed);
               setTyped('');
             }
