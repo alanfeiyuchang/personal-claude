@@ -513,9 +513,7 @@ export function MintyBrain() {
   };
 
   // push-to-talk: hold Space to record, release to submit — skipped while a
-  // real text field has focus so typing a space still works everywhere else,
-  // except the chat composer (data-minty-chatbox), where Space should still
-  // hand off to Minty instead of typing a literal space
+  // real text field has focus so typing a space still works everywhere else
   const spaceHeldRef = useRef(false);
   // interrupting thinking/speaking: a quick tap should just stop it, a hold
   // should barge in and start listening. Distinguished by whether Space is
@@ -526,7 +524,6 @@ export function MintyBrain() {
   useEffect(() => {
     const isFormField = (el: EventTarget | null) => {
       if (!(el instanceof HTMLElement)) return false;
-      if (el.dataset.mintyChatbox === 'true') return false;
       const tag = el.tagName;
       return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
     };
