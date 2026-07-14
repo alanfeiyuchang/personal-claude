@@ -8,6 +8,7 @@
     "dev": "vite ui",
     "build": "vite build ui",
     "start": "node server/index.mjs",
+    "restart": "bash scripts/restart-server.sh",
     "typecheck": "tsc -p ui --noEmit"
   },
   "dependencies": {
