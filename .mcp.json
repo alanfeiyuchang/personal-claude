@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "minty-personal-claude": {
+      "command": "node",
+      "args": [
+        "server/minty-mcp-stdio.mjs"
+      ],
+      "disabled": false
+    }
+  }
+}

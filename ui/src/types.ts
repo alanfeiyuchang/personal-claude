@@ -137,10 +137,12 @@ export interface MintyAction {
 export type MintyPhase = 'idle' | 'listening' | 'thinking' | 'speaking';
 
 export type ServerMessage =
-  | { type: 'hello'; sessions: SessionSummary[]; devRoot: string }
+  | { type: 'hello'; sessions: SessionSummary[]; devRoot: string; mintyModel: string }
   | { type: 'skill_meta'; reqId?: string; dir: string; skills: Record<string, SkillMeta> }
   | { type: 'minty_say'; delta: string }
   | { type: 'minty_reply'; say: string; action: MintyAction | null; error?: string }
+  | { type: 'minty_model'; model: string }
+  | { type: 'transcribed'; reqId?: string; text: string; error?: string }
   | { type: 'usage'; reqId?: string; usage: UsageReport }
   | { type: 'limits'; reqId?: string; limits: PlanLimit[] | null }
   | { type: 'session_update'; session: SessionSummary }

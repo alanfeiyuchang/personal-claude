@@ -1,0 +1,9 @@
+{
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": ["minty-personal-claude"],
+  "permissions": {
+    "allow": [
+      "mcp_tool(minty-personal-claude:*)"
+    ]
+  }
+}

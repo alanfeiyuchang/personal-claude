@@ -22,7 +22,7 @@ export const STATES = [
 ];
 
 export class ClaudeSession extends EventEmitter {
-  constructor({ id, name, dir, model, permissionMode, resume, claudeBin }) {
+  constructor({ id, name, dir, model, permissionMode, resume, claudeBin, env }) {
     super();
     this.id = id || randomUUID();
     this.name = name || dir.split('/').filter(Boolean).pop() || 'session';
@@ -31,6 +31,10 @@ export class ClaudeSession extends EventEmitter {
     this.permissionMode = permissionMode || 'bypassPermissions';
     this.resume = resume || null;
     this.claudeBin = claudeBin || 'claude';
+    // extra env vars merged over process.env when spawning — e.g. the
+    // ANTHROPIC_BASE_URL override that routes a local-model session through
+    // the Qwen proxy (see server/localmodel.mjs)
+    this.env = env || null;
 
     this.state = 'starting';
     this.claudeSessionId = null;
@@ -70,7 +74,7 @@ export class ClaudeSession extends EventEmitter {
     this.proc = spawn(this.claudeBin, args, {
       cwd: this.dir,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: { ...process.env, ...(this.env || {}) },
     });
 
     this.proc.stdout.setEncoding('utf8');

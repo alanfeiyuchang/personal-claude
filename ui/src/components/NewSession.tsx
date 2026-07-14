@@ -3,7 +3,16 @@ import { useStore, wsSend } from '../store';
 import { MODELS } from '../models';
 import { timeAgo } from '../util';
 
-const MODEL_OPTIONS = [{ value: '', label: 'Default model' }, ...MODELS];
+// 'qwen3-8b' must match LOCAL_MODEL in server/localmodel.mjs. Only offered
+// here (session creation), not in the Hud's live model-switcher: that sends
+// a control_request to an already-running `claude` process, which can't
+// repoint its ANTHROPIC_BASE_URL — routing through the local proxy only
+// works when it's set as an env var at spawn time.
+const MODEL_OPTIONS = [
+  { value: '', label: 'Default model' },
+  ...MODELS,
+  { value: 'qwen3-8b', label: 'Qwen3 8B (local, offline)' },
+];
 
 const PERMISSION_MODES = [
   { value: 'default', label: 'Default (ask)' },

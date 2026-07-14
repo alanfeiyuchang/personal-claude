@@ -14,7 +14,11 @@ import { listHistory, deleteHistory, loadTranscript, saveSessionName } from './h
 import { getGitInfo } from './git.mjs';
 import { getSkillMeta } from './skills.mjs';
 import { minty } from './minty.mjs';
+import { transcribe, stopWhisper, warmUpWhisper } from './whisper.mjs';
+import { synthesize, stopTts, warmUpTts } from './tts.mjs';
 import { graphifyStatus, rebuildGraph, GRAPHIFY_OUT } from './graphify.mjs';
+import { MintyMCPServer, setMintyMCPSessionManager } from './minty-mcp.mjs';
+import { isLocalModel, ensureLocalModelReady, localModelEnv, warmUpLocalModel, stopLocalModel } from './localmodel.mjs';
 
 const PORT = Number(process.env.PC_PORT || 4317);
 const HOST = '127.0.0.1';
@@ -77,6 +81,23 @@ const httpServer = createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/tts') {
+      const text = url.searchParams.get('text') || '';
+      if (!text.trim()) {
+        res.writeHead(400).end();
+        return;
+      }
+      try {
+        const wav = await synthesize(text, url.searchParams.get('voice') || undefined);
+        res.writeHead(200, { 'content-type': 'audio/wav', 'content-length': wav.length });
+        res.end(wav);
+      } catch (err) {
+        res.writeHead(500, { 'content-type': 'text/plain' });
+        res.end(err.message);
+      }
+      return;
+    }
+
     let path = url.pathname === '/' ? '/index.html' : url.pathname;
     const file = resolve(UI_DIST, '.' + path);
     if (!file.startsWith(UI_DIST)) {
@@ -116,6 +137,7 @@ wss.on('connection', (ws) => {
     type: 'hello',
     sessions: [...sessions.values()].map((s) => s.summary()),
     devRoot: DEV_ROOT,
+    mintyModel: minty.model,
   });
 });
 
@@ -126,22 +148,44 @@ async function handleClientMessage(ws, msg) {
       sendTo(ws, { type: 'created', reqId: msg.reqId, id: session.id });
       break;
     }
+    case 'transcribe': {
+      try {
+        const buf = Buffer.from(String(msg.audio ?? ''), 'base64');
+        const text = await transcribe(buf, msg.language);
+        sendTo(ws, { type: 'transcribed', reqId: msg.reqId, text });
+      } catch (err) {
+        sendTo(ws, { type: 'transcribed', reqId: msg.reqId, text: '', error: err.message });
+      }
+      break;
+    }
     case 'minty': {
       const utterance = String(msg.text ?? '').trim();
       if (!utterance) break;
       const entries = await readdir(DEV_ROOT, { withFileTypes: true }).catch(() => []);
+      // the session the asking tab currently has focused — the default
+      // referent when the user says "this session" / "what's it doing"
+      const activeId = sessions.has(msg.activeId) ? msg.activeId : null;
+      const activeSession = activeId ? sessions.get(activeId) : null;
+      const mintyAppState = {
+        sessions: [...sessions.values()].map((s) => ({
+          id: s.id, name: s.name, dir: s.dir, state: s.state,
+          active: s.id === activeId,
+        })),
+        activeSessionId: activeId,
+        // a snapshot of what the focused session is doing right now, so
+        // Minty can answer "what's it up to?" without a tool round-trip
+        activeSession: activeSession ? summarizeForMinty(activeSession) : null,
+        devRoot: DEV_ROOT,
+        projects: entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name),
+      };
+      if (process.env.PC_MINTY_DEBUG) console.error('[minty debug] appState:', JSON.stringify(mintyAppState, null, 2));
       const reply = await minty.ask(
         utterance,
-        {
-          sessions: [...sessions.values()].map((s) => ({
-            id: s.id, name: s.name, dir: s.dir, state: s.state,
-          })),
-          devRoot: DEV_ROOT,
-          projects: entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name),
-        },
+        mintyAppState,
         // stream the spoken text so the client can start TTS immediately
         (delta) => sendTo(ws, { type: 'minty_say', delta })
       );
+      if (reply.aborted) break; // client already interrupted this turn locally — nothing to send
       let action = reply.action;
       try {
         if (action?.type === 'task' && !action.sessionId && action.newSession) {
@@ -160,6 +204,16 @@ async function handleClientMessage(ws, msg) {
       }
       // only the asking client acts on it — avoids duplicate sends from other tabs
       sendTo(ws, { type: 'minty_reply', say: reply.say, action, error: reply.error });
+      break;
+    }
+    case 'minty_interrupt': {
+      minty.interrupt();
+      break;
+    }
+    case 'set_minty_model': {
+      minty.setModel(String(msg.model ?? ''));
+      // every tab's toggle should reflect the switch, not just the one that sent it
+      broadcast({ type: 'minty_model', model: minty.model });
       break;
     }
     case 'send': {
@@ -256,16 +310,46 @@ async function handleClientMessage(ws, msg) {
   }
 }
 
+// A compact, spoken-assistant-friendly snapshot of a session's current
+// activity — handed to Minty so it can answer "what's it doing?" about the
+// focused session directly, without spending a tool call (and a slow round
+// trip) to fetch it.
+function summarizeForMinty(session) {
+  const recent = session.transcript
+    .filter((e) => e.kind === 'assistant_text' || e.kind === 'user_text')
+    .slice(-4)
+    .map((e) => ({
+      role: e.kind === 'user_text' ? 'user' : 'assistant',
+      text: String(e.text || '').slice(0, 500),
+    }));
+  return {
+    id: session.id,
+    name: session.name,
+    dir: session.dir,
+    state: session.state,
+    currentTool: session.currentTool || null,
+    recentMessages: recent,
+  };
+}
+
 async function createSession(msg) {
   const dir = msg.dir && String(msg.dir).trim() ? expandHome(String(msg.dir).trim()) : DEV_ROOT;
   const st = await stat(dir).catch(() => null);
   if (!st?.isDirectory()) throw new Error(`not a directory: ${dir}`);
+  // routes the session's `claude` process at the local Qwen proxy instead of
+  // the Anthropic API — see server/localmodel.mjs
+  let env;
+  if (isLocalModel(msg.model)) {
+    await ensureLocalModelReady();
+    env = localModelEnv();
+  }
   const session = new ClaudeSession({
     name: msg.name,
     dir,
     model: msg.model,
     permissionMode: msg.permissionMode,
     resume: msg.resume,
+    env,
   });
   if (msg.resume) {
     session.transcript = await loadTranscript(dir, msg.resume).catch(() => []);
@@ -311,7 +395,31 @@ function broadcast(obj) {
   for (const ws of clients) if (ws.readyState === ws.OPEN) ws.send(data);
 }
 
+// ── Minty MCP server ──────────────────────────────────────────────────────
+
+const sessionManager = {
+  getSessions: () => Array.from(sessions.values()),
+  getSession: (id) => sessions.get(id),
+  getActiveSession: () => null, // can be enhanced to track active session
+};
+
+setMintyMCPSessionManager(sessionManager);
+
+// MCP server will be spawned separately via .mcp.json when claude processes connect
+
 // ── lifecycle ──────────────────────────────────────────────────────────────
+
+// Fire-and-forget, kicked off before the HTTP bind so it overlaps with the
+// rest of startup: gets whisper-server past its ~8s cold start (Metal shader
+// compile + model load) before anyone hits Space for the first time.
+warmUpWhisper();
+// same reasoning — Minty's brain defaults to the local Qwen model, and its
+// cold start (Ollama + the translation proxy booting) is much longer than
+// whisper's, so it's worth overlapping with server startup too.
+if (minty.usesLocalModel()) warmUpLocalModel();
+// same reasoning — the local TTS server's MLX model load is worth
+// overlapping with the rest of startup too.
+warmUpTts();
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`Personal Claude → http://localhost:${PORT}`);
@@ -321,6 +429,9 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     for (const s of sessions.values()) s.stop();
     minty.stop();
+    stopWhisper();
+    stopLocalModel();
+    stopTts();
     httpServer.close();
     setTimeout(() => process.exit(0), 500).unref();
   });

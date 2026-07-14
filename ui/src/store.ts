@@ -30,12 +30,15 @@ interface Store {
   git: { dir: string; info: GitInfo } | null;
   skillMeta: Record<string, SkillMeta>;
   minty: { phase: MintyPhase; transcript: string; say: string; stream: string; done: boolean };
+  mintyModel: string; // 'qwen3-8b' | 'haiku' — see CLOUD_MODEL/LOCAL_MODEL in server/minty.mjs
   mintyTask: { sessionId: string; text: string; nonce: number } | null;
+  transcribeResult: { reqId: string; text: string; error?: string } | null;
 
   setMinty: (
     patch: Partial<{ phase: MintyPhase; transcript: string; say: string; stream: string; done: boolean }>
   ) => void;
   clearMintyTask: () => void;
+  clearTranscribeResult: () => void;
 
   setActiveTab: (t: Tab) => void;
   setActive: (id: string) => void;
@@ -62,10 +65,13 @@ export const useStore = create<Store>((set, get) => ({
   git: null,
   skillMeta: {},
   minty: { phase: 'idle', transcript: '', say: '', stream: '', done: false },
+  mintyModel: 'haiku', // matches DEFAULT_MODEL in server/minty.mjs; overwritten by the 'hello' message anyway
   mintyTask: null,
+  transcribeResult: null,
 
   setMinty: (patch) => set((prev) => ({ minty: { ...prev.minty, ...patch } })),
   clearMintyTask: () => set({ mintyTask: null }),
+  clearTranscribeResult: () => set({ transcribeResult: null }),
 
   setActiveTab: (t) => set({ activeTab: t }),
   setActive: (id) => set({ activeId: id }),
@@ -95,6 +101,7 @@ export const useStore = create<Store>((set, get) => ({
           sessions,
           order,
           activeId: st.activeId && sessions[st.activeId] ? st.activeId : order[0] ?? null,
+          mintyModel: msg.mintyModel,
         });
         // refresh backlogs after (re)connect
         for (const id of order) wsSend({ type: 'get_backlog', id });
@@ -175,6 +182,14 @@ export const useStore = create<Store>((set, get) => ({
       case 'skill_meta': {
         // merge: bare-name entries from one dir stay useful across sessions
         set((prev) => ({ skillMeta: { ...prev.skillMeta, ...msg.skills } }));
+        break;
+      }
+      case 'transcribed': {
+        set({ transcribeResult: { reqId: msg.reqId ?? '', text: msg.text, error: msg.error } });
+        break;
+      }
+      case 'minty_model': {
+        set({ mintyModel: msg.model });
         break;
       }
       case 'minty_say': {

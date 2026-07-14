@@ -1696,6 +1696,12 @@ body {
   justify-content: space-between;
 }
 
+.minty-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .minty-lang {
   border: 1px solid rgba(52, 211, 153, 0.3);
   background: rgba(52, 211, 153, 0.08);

@@ -2,11 +2,17 @@ import { useEffect, useRef, useState } from 'react';
 import { useStore, wsSend } from '../store';
 import type { MintyPhase } from '../types';
 
-// Minty — the Jarvis-style voice assistant. A neural orb that listens on click
-// (Web Speech API), sends the utterance to the server brain, speaks the reply
-// (speechSynthesis), and lets the brain drive the app (tasks land in the
-// composer via store.mintyTask). Falls back to a text input where speech
-// recognition isn't available.
+// Minty — the Jarvis-style voice assistant. A neural orb that records on click,
+// transcribes locally via whisper.cpp (far better than the browser's Web Speech
+// API at code-switched Chinese/English, since that locks a whole utterance to
+// one BCP-47 language), sends the text to the server brain, speaks the reply
+// via a local Qwen3-TTS server (server/tts.mjs) — chosen over the browser's
+// speechSynthesis because it reads code-switched Chinese/English in one
+// continuous voice, instead of needing a different system voice per language —
+// and lets the brain drive the app (tasks land in the composer via
+// store.mintyTask). Falls back to a text input where the mic isn't available.
+
+const MINTY_VOICE = 'Chelsie';
 
 const PHASE_COLOR: Record<MintyPhase, [number, number, number]> = {
   idle: [52, 211, 153], // mint
@@ -16,40 +22,144 @@ const PHASE_COLOR: Record<MintyPhase, [number, number, number]> = {
 };
 
 const PHASE_LABEL: Record<MintyPhase, string> = {
-  idle: 'tap to talk',
+  idle: 'tap or hold space',
   listening: 'listening…',
   thinking: 'thinking…',
   speaking: 'speaking…',
 };
 
-type SR = {
-  lang: string;
-  continuous: boolean;
-  interimResults: boolean;
-  start(): void;
-  stop(): void;
-  abort(): void;
-  onresult: ((e: any) => void) | null;
-  onerror: ((e: any) => void) | null;
-  onend: (() => void) | null;
-};
+// ── mic capture → 16kHz mono WAV (whisper.cpp's native input format) ────────
 
-function getRecognizer(): SR | null {
-  const Ctor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-  return Ctor ? new Ctor() : null;
+interface Recording {
+  stream: MediaStream;
+  ctx: AudioContext;
+  source: MediaStreamAudioSourceNode;
+  processor: ScriptProcessorNode;
+  gain: GainNode;
+  chunks: Float32Array[];
+  active: boolean; // gates onaudioprocess -> chunks, so start/stop is just a flag flip
+}
+
+// Acquiring a fresh mic stream (getUserMedia + AudioContext) costs anywhere
+// from ~200ms to 1-2s depending on the audio device (Bluetooth headsets in
+// particular have to renegotiate a profile every time). Doing that on every
+// single Space press was the source of the "long wait before listening"
+// delay — this graph is now built once and kept alive/reused for the whole
+// session; start/stop just flips `active` and resets `chunks`.
+async function beginRecording(): Promise<Recording> {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+  const ctx: AudioContext = new Ctx();
+  const source = ctx.createMediaStreamSource(stream);
+  const processor = ctx.createScriptProcessor(4096, 1, 1);
+  const gain = ctx.createGain();
+  gain.gain.value = 0; // silence the loopback — we only want the samples, not audible feedback
+  const rec: Recording = { stream, ctx, source, processor, gain, chunks: [], active: false };
+  processor.onaudioprocess = (e) => {
+    if (rec.active) rec.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+  };
+  source.connect(processor);
+  processor.connect(gain);
+  gain.connect(ctx.destination);
+  return rec;
+}
+
+function encodeWav(pcm: Int16Array, sampleRate: number): ArrayBuffer {
+  const dataSize = pcm.length * 2;
+  const buf = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(buf);
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i));
+  };
+  writeStr(0, 'RIFF');
+  view.setUint32(4, 36 + dataSize, true);
+  writeStr(8, 'WAVE');
+  writeStr(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true); // byte rate
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  writeStr(36, 'data');
+  view.setUint32(40, dataSize, true);
+  new Int16Array(buf, 44).set(pcm);
+  return buf;
+}
+
+// drains the accumulated samples and returns a 16kHz mono WAV blob — the
+// audio graph itself stays alive (see beginRecording) so the next listen can
+// start instantly instead of re-acquiring the mic
+function finishRecording(rec: Recording): Blob | null {
+  const chunks = rec.chunks;
+  rec.chunks = [];
+
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  if (!total) return null;
+  const merged = new Float32Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    merged.set(c, off);
+    off += c.length;
+  }
+
+  const sourceRate = rec.ctx.sampleRate;
+  const targetRate = 16000;
+  const ratio = sourceRate / targetRate;
+  const outLen = Math.floor(merged.length / ratio);
+  const pcm = new Int16Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const s = Math.max(-1, Math.min(1, merged[Math.floor(i * ratio)]));
+    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return new Blob([encodeWav(pcm, targetRate)], { type: 'audio/wav' });
+}
+
+function arrayBufferToBase64(buf: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buf);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 export function MintyBrain() {
   const minty = useStore((s) => s.minty);
   const setMinty = useStore((s) => s.setMinty);
+  const mintyModel = useStore((s) => s.mintyModel);
   const phaseRef = useRef(minty.phase);
   phaseRef.current = minty.phase;
 
-  const recRef = useRef<SR | null>(null);
-  const [srAvailable] = useState(() => !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition));
+  const recordingRef = useRef<Recording | null>(null);
+  const recordingSetupRef = useRef<Promise<Recording> | null>(null); // dedupes concurrent beginRecording() calls
+  const pendingReqRef = useRef<string | null>(null);
+  const [micAvailable] = useState(() => !!navigator.mediaDevices?.getUserMedia);
   const [typed, setTyped] = useState('');
+  const transcribeResult = useStore((s) => s.transcribeResult);
+  const clearTranscribeResult = useStore((s) => s.clearTranscribeResult);
 
-  // 'mixed' = Mandarin recognizer (handles 中英 code-switching); 'en' = English only
+  // release the mic for real when the component goes away — the graph itself
+  // is otherwise kept alive across recordings (see beginRecording)
+  useEffect(() => {
+    return () => {
+      const rec = recordingRef.current;
+      if (!rec) return;
+      rec.active = false;
+      try {
+        rec.processor.disconnect();
+        rec.source.disconnect();
+        rec.gain.disconnect();
+      } catch { /* already torn down */ }
+      rec.stream.getTracks().forEach((t) => t.stop());
+      rec.ctx.close();
+      recordingRef.current = null;
+    };
+  }, []);
+
+  // 'mixed' = auto-detect (handles 中英 code-switching); 'en' = English only
   const [lang, setLang] = useState(() => localStorage.getItem('pc-minty-lang') || 'mixed');
   const langRef = useRef(lang);
   langRef.current = lang;
@@ -57,6 +167,14 @@ export function MintyBrain() {
     const next = lang === 'mixed' ? 'en' : 'mixed';
     setLang(next);
     localStorage.setItem('pc-minty-lang', next);
+  };
+
+  // 'qwen3-8b' must match LOCAL_MODEL in server/localmodel.mjs, 'haiku' must
+  // match CLOUD_MODEL in server/minty.mjs. Switching kills and respawns
+  // Minty's brain process server-side (see Minty.setModel), so it drops
+  // whatever it was mid-thought on — fine for a deliberate toggle.
+  const toggleMintyModel = () => {
+    wsSend({ type: 'set_minty_model', model: mintyModel === 'qwen3-8b' ? 'haiku' : 'qwen3-8b' });
   };
 
   // tooling hooks: let demos/tests drive the orb state without a mic/TTS
@@ -80,8 +198,8 @@ export function MintyBrain() {
   const enqueuedRef = useRef(0); // chars of minty.stream already handed to TTS
   const activeUtterRef = useRef(0);
   const finalSpokenRef = useRef(false);
-  // live voice envelope: word boundaries spike energy, silence decays it —
-  // the orb reads this to animate in rhythm with the actual audio
+  // live voice envelope: real playback amplitude drives this (see meterTick)
+  // — the orb reads it to animate in rhythm with the actual audio
   const voiceRef = useRef({ energy: 0, talking: false });
 
   const maybeIdle = () => {
@@ -90,66 +208,132 @@ export function MintyBrain() {
     }
   };
 
-  const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
-  // a run of CJK text (with its adjoining CJK punctuation) or a run of
-  // everything else -- splitting on these boundaries is what lets one
-  // code-switched sentence get read by two different voices in turn
-  const RUN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff0c\u3002\uff01\uff1f\uff1b\uff1a\u3001\u201c\u201d\u2018\u2019]+|[^\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/g;
+  // one AudioContext reused for the whole session (same reasoning as the
+  // mic's recording graph — avoids paying setup cost per utterance), fed by
+  // fetches against the local Qwen3-TTS server (see server/tts.mjs)
+  const playCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  // utterances are fetched as soon as their text is ready but must still
+  // play back in order — this chain is what gives fetch (which can race
+  // ahead of playback) native speechSynthesis-style queuing
+  const playChainRef = useRef<Promise<void>>(Promise.resolve());
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const meterRafRef = useRef(0);
+  // bumped on interrupt/submit to invalidate anything still in-flight or
+  // queued, so a stale reply can't start playing after the fact
+  const genRef = useRef(0);
 
-  const pickVoice = (isCJK: boolean, voices: SpeechSynthesisVoice[]) =>
-    isCJK
-      ? (voices.find((v) => v.name === 'Tingting') ??
-        voices.find((v) => v.lang.replace('_', '-').startsWith('zh') && v.localService) ??
-        voices.find((v) => v.lang.replace('_', '-').startsWith('zh')) ??
-        null)
-      : (voices.find((v) => v.name === 'Samantha') ??
-        voices.find((v) => v.lang.startsWith('en') && v.localService) ??
-        voices.find((v) => v.lang.startsWith('en')) ??
-        null);
+  const ensurePlayCtx = () => {
+    if (!playCtxRef.current) {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx: AudioContext = new Ctx();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.connect(ctx.destination);
+      playCtxRef.current = ctx;
+      analyserRef.current = analyser;
+    }
+    return { ctx: playCtxRef.current!, analyser: analyserRef.current! };
+  };
 
-  const speakRun = (run: string, isCJK: boolean, voices: SpeechSynthesisVoice[]) => {
-    const r = run.trim();
-    if (!r) return;
-    const u = new SpeechSynthesisUtterance(r);
-    u.lang = isCJK ? 'zh-CN' : 'en-US';
-    u.voice = pickVoice(isCJK, voices);
-    u.rate = 1.05;
-    activeUtterRef.current++;
-    u.onstart = () => {
+  const meterTick = () => {
+    const analyser = analyserRef.current;
+    if (!analyser) return;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    analyser.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / data.length);
+    voiceRef.current.energy = Math.max(voiceRef.current.energy, Math.min(1, rms * 3.5));
+    if (voiceRef.current.talking) meterRafRef.current = requestAnimationFrame(meterTick);
+  };
+
+  const playBuffer = (buffer: AudioBuffer, gen: number) =>
+    new Promise<void>((resolve) => {
+      if (gen !== genRef.current) { resolve(); return; }
+      const { ctx, analyser } = ensurePlayCtx();
+      const src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(analyser);
+      currentSourceRef.current = src;
       voiceRef.current.talking = true;
-      voiceRef.current.energy = Math.max(voiceRef.current.energy, 0.7);
-    };
-    u.onboundary = () => {
-      voiceRef.current.energy = 1; // a word is being spoken right now
-    };
-    u.onend = u.onerror = () => {
-      activeUtterRef.current--;
-      if (activeUtterRef.current <= 0) voiceRef.current.talking = false;
-      maybeIdle();
-    };
-    speechSynthesis.speak(u); // utterances queue natively, in order
+      if (!meterRafRef.current) meterRafRef.current = requestAnimationFrame(meterTick);
+      src.onended = () => {
+        currentSourceRef.current = null;
+        activeUtterRef.current--;
+        if (activeUtterRef.current <= 0) {
+          voiceRef.current.talking = false;
+          cancelAnimationFrame(meterRafRef.current);
+          meterRafRef.current = 0;
+        }
+        maybeIdle();
+        resolve();
+      };
+      src.start();
+    });
+
+  const fetchAndDecode = async (text: string, gen: number): Promise<AudioBuffer | null> => {
+    try {
+      const res = await fetch(`/tts?text=${encodeURIComponent(text)}&voice=${MINTY_VOICE}`);
+      if (!res.ok) throw new Error(`tts ${res.status}`);
+      const arr = await res.arrayBuffer();
+      if (gen !== genRef.current) return null;
+      const { ctx } = ensurePlayCtx();
+      return await ctx.decodeAudioData(arr);
+    } catch {
+      return null;
+    }
   };
 
   const speakChunk = (text: string) => {
     const t = text.trim();
     if (!t) return;
-    const voices = speechSynthesis.getVoices();
-    // split code-switched text (e.g. "这个 API 的 rate limit 是多少") into
-    // per-script runs so each run is spoken in its own language's voice,
-    // instead of reading the whole sentence in whichever voice matched first
-    const runs = t.match(RUN_RE) || [t];
-    for (const run of runs) speakRun(run, CJK_RE.test(run), voices);
+    const gen = genRef.current;
+    activeUtterRef.current++;
+    const bufferPromise = fetchAndDecode(t, gen);
+    playChainRef.current = playChainRef.current.then(async () => {
+      if (gen !== genRef.current) { activeUtterRef.current--; maybeIdle(); return; }
+      const buffer = await bufferPromise;
+      if (!buffer || gen !== genRef.current) {
+        activeUtterRef.current--;
+        maybeIdle();
+        return;
+      }
+      await playBuffer(buffer, gen);
+    });
+  };
+
+  // stops anything currently playing and drops anything queued/in-flight —
+  // the local-TTS equivalent of speechSynthesis.cancel()
+  const stopSpeaking = () => {
+    genRef.current++;
+    playChainRef.current = Promise.resolve();
+    if (currentSourceRef.current) {
+      try { currentSourceRef.current.onended = null; currentSourceRef.current.stop(); } catch { /* already stopped */ }
+      currentSourceRef.current = null;
+    }
+    if (meterRafRef.current) {
+      cancelAnimationFrame(meterRafRef.current);
+      meterRafRef.current = 0;
+    }
+    activeUtterRef.current = 0;
+    voiceRef.current.talking = false;
+    voiceRef.current.energy = 0;
   };
 
   const submit = (text: string) => {
     const t = text.trim();
     if (!t) return;
-    speechSynthesis.cancel();
+    stopSpeaking();
     enqueuedRef.current = 0;
-    activeUtterRef.current = 0;
     finalSpokenRef.current = false;
     setMinty({ phase: 'thinking', transcript: t, say: '', stream: '', done: false });
-    wsSend({ type: 'minty', text: t });
+    // the session the user is currently looking at — Minty treats this as the
+    // default referent for "this session" / "what's it doing" (see index.mjs)
+    wsSend({ type: 'minty', text: t, activeId: useStore.getState().activeId });
   };
 
   // stream deltas → speak each completed sentence immediately
@@ -176,50 +360,138 @@ export function MintyBrain() {
     maybeIdle();
   }, [minty.done]);
 
-  const startListening = () => {
-    const rec = getRecognizer();
-    if (!rec) return;
-    recRef.current = rec;
-    // Mandarin recognizer transcribes 中英 code-switched speech; English-only
-    // mode is more accurate when no Chinese is expected
-    rec.lang = langRef.current === 'mixed' ? 'zh-CN' : 'en-US';
-    rec.continuous = false;
-    rec.interimResults = true;
-    let finalText = '';
-    rec.onresult = (e: any) => {
-      let interim = '';
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        const r = e.results[i];
-        if (r.isFinal) finalText += r[0].transcript;
-        else interim += r[0].transcript;
+  // local whisper.cpp transcription result lands here (see server/whisper.mjs) —
+  // matched against the request this component is actually waiting on, since
+  // stray/late results shouldn't hijack whatever the orb is doing by then
+  useEffect(() => {
+    if (!transcribeResult || !pendingReqRef.current || transcribeResult.reqId !== pendingReqRef.current) return;
+    pendingReqRef.current = null;
+    clearTranscribeResult();
+    if (transcribeResult.error) {
+      setMinty({ phase: 'idle', transcript: `transcription error: ${transcribeResult.error}` });
+      return;
+    }
+    const text = transcribeResult.text.trim();
+    if (text) submit(text);
+    else setMinty({ phase: 'idle', transcript: '' });
+  }, [transcribeResult]);
+
+  const startListening = async () => {
+    try {
+      // reuse the already-warm graph if we have one; only the very first
+      // call in the session pays for getUserMedia + AudioContext setup
+      let rec = recordingRef.current;
+      if (!rec) {
+        if (!recordingSetupRef.current) recordingSetupRef.current = beginRecording();
+        rec = await recordingSetupRef.current;
+        recordingSetupRef.current = null;
+        recordingRef.current = rec;
       }
-      setMinty({ transcript: (finalText + ' ' + interim).trim() });
-    };
-    rec.onerror = (e: any) => {
-      setMinty({ phase: 'idle', say: '', transcript: e.error === 'not-allowed' ? 'mic permission denied' : `mic error: ${e.error}` });
-    };
-    rec.onend = () => {
-      recRef.current = null;
-      if (phaseRef.current !== 'listening') return;
-      if (finalText.trim()) submit(finalText);
-      else setMinty({ phase: 'idle' });
-    };
+      if (rec.ctx.state === 'suspended') await rec.ctx.resume();
+      rec.chunks = [];
+      rec.active = true;
+    } catch {
+      setMinty({ phase: 'idle', transcript: 'mic permission denied' });
+      return;
+    }
     setMinty({ phase: 'listening', transcript: '', say: '' });
-    rec.start();
+  };
+
+  const stopListening = async () => {
+    const rec = recordingRef.current;
+    if (rec) rec.active = false;
+    const blob = rec && finishRecording(rec);
+    if (!blob) {
+      setMinty({ phase: 'idle' });
+      return;
+    }
+    setMinty({ transcript: 'transcribing…' });
+    const audio = arrayBufferToBase64(await blob.arrayBuffer());
+    const reqId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    pendingReqRef.current = reqId;
+    wsSend({ type: 'transcribe', reqId, audio, language: langRef.current === 'mixed' ? 'auto' : 'en' });
+  };
+
+  // bails out of whatever Minty is currently doing — stops speech immediately
+  // and tells the server to abandon the in-flight brain turn (see minty.mjs
+  // Minty.interrupt) so its eventual reply/deltas don't land after the fact
+  const interruptMinty = () => {
+    stopSpeaking();
+    wsSend({ type: 'minty_interrupt' });
+    enqueuedRef.current = 0;
+    finalSpokenRef.current = false;
+    setMinty({ phase: 'idle', say: '', stream: '' });
   };
 
   const onOrbClick = () => {
     if (minty.phase === 'listening') {
-      recRef.current?.stop(); // onend submits what we have
-    } else if (minty.phase === 'speaking') {
-      speechSynthesis.cancel();
-      setMinty({ phase: 'idle' });
-      if (srAvailable) startListening();
+      stopListening(); // transcribeResult effect submits what we get back
+    } else if (minty.phase === 'speaking' || minty.phase === 'thinking') {
+      interruptMinty();
+      if (micAvailable) startListening();
     } else if (minty.phase === 'idle') {
-      if (srAvailable) startListening();
+      if (micAvailable) startListening();
     }
-    // thinking: ignore clicks
   };
+
+  // push-to-talk: hold Space to record, release to submit — skipped while a
+  // real text field has focus so typing a space still works everywhere else
+  const spaceHeldRef = useRef(false);
+  // interrupting thinking/speaking: a quick tap should just stop it, a hold
+  // should barge in and start listening. Distinguished by whether Space is
+  // still held after a short beat — this timer only exists on the
+  // interrupt path, so the normal idle press-to-listen stays instant.
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const HOLD_THRESHOLD_MS = 200;
+  useEffect(() => {
+    const isFormField = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+    };
+    const release = () => {
+      spaceHeldRef.current = false;
+      if (holdTimerRef.current) {
+        clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = null;
+      }
+      if (phaseRef.current === 'listening') stopListening();
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || e.repeat || spaceHeldRef.current || isFormField(e.target)) return;
+      if (phaseRef.current === 'listening') return; // already recording (e.g. started by click)
+      e.preventDefault(); // don't let the page scroll
+      spaceHeldRef.current = true;
+      if (phaseRef.current === 'thinking' || phaseRef.current === 'speaking') {
+        interruptMinty(); // always stops immediately, tap or hold
+        // ...but only start a new recording if Space is still down a beat
+        // later — a quick tap should just interrupt, not also arm the mic
+        holdTimerRef.current = setTimeout(() => {
+          holdTimerRef.current = null;
+          if (spaceHeldRef.current && micAvailable) startListening();
+        }, HOLD_THRESHOLD_MS);
+        return;
+      }
+      if (micAvailable) startListening();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !spaceHeldRef.current) return;
+      release();
+    };
+    // holding space through an alt-tab/blur shouldn't leave the mic running forever
+    const onBlur = () => {
+      if (spaceHeldRef.current) release();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+      if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+    };
+  }, [micAvailable]);
 
   return (
     <div className="minty-dock">
@@ -227,13 +499,22 @@ export function MintyBrain() {
         <span>
           Minty <span className="minty-phase">{PHASE_LABEL[minty.phase]}</span>
         </span>
-        <button
-          className="minty-lang"
-          title={lang === 'mixed' ? 'Listening for 中文 + English (click for English only)' : 'Listening for English only (click for 中英混合)'}
-          onClick={toggleLang}
-        >
-          {lang === 'mixed' ? '中/EN' : 'EN'}
-        </button>
+        <div className="minty-title-actions">
+          <button
+            className="minty-lang"
+            title={mintyModel === 'qwen3-8b' ? 'Brain: Qwen3 8B, local & offline (click to switch to Haiku)' : 'Brain: Claude Haiku, cloud (click to switch to local Qwen3)'}
+            onClick={toggleMintyModel}
+          >
+            {mintyModel === 'qwen3-8b' ? 'Qwen' : 'Haiku'}
+          </button>
+          <button
+            className="minty-lang"
+            title={lang === 'mixed' ? 'Listening for 中文 + English (click for English only)' : 'Listening for English only (click for 中英混合)'}
+            onClick={toggleLang}
+          >
+            {lang === 'mixed' ? '中/EN' : 'EN'}
+          </button>
+        </div>
       </div>
       <BrainCanvas phase={minty.phase} voice={voiceRef} onClick={onOrbClick} />
       {(minty.transcript || minty.say || minty.stream) && (
@@ -243,7 +524,7 @@ export function MintyBrain() {
             : `“${minty.transcript}”`}
         </div>
       )}
-      {!srAvailable && (
+      {!micAvailable && (
         <input
           className="minty-input"
           type="text"
@@ -584,7 +865,7 @@ function BrainCanvas({
       ref={ref}
       className="minty-canvas"
       role="button"
-      aria-label="Minty voice assistant — click to talk"
+      aria-label="Minty voice assistant — click to talk, or hold Space"
       onClick={onClick}
     />
   );
