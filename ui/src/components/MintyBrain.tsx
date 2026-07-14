@@ -190,25 +190,11 @@ export function MintyBrain() {
     };
   }, [setMinty]);
 
-  // speechSynthesis.getVoices() can return an incomplete list (large voice
-  // files like "Lilian (Premium)" register after the smaller default ones)
-  // until 'voiceschanged' fires — calling getVoices() fresh on every
-  // utterance raced that, silently dropping to no CJK voice while English
-  // (whose default voices load first) kept working. Cache it and keep it
-  // fresh via the event instead.
-  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
-  useEffect(() => {
-    const load = () => { voicesRef.current = speechSynthesis.getVoices(); };
-    load();
-    speechSynthesis.addEventListener('voiceschanged', load);
-    return () => speechSynthesis.removeEventListener('voiceschanged', load);
-  }, []);
-
   // ── streaming speech: speak sentence-by-sentence as `say` streams in ─────
   const enqueuedRef = useRef(0); // chars of minty.stream already handed to TTS
   const activeUtterRef = useRef(0);
   const finalSpokenRef = useRef(false);
-  // live voice envelope: word boundaries spike energy, silence decays it —
+  // live voice envelope: word boundaries spike energy, silence decays it \u2014
   // the orb reads this to animate in rhythm with the actual audio
   const voiceRef = useRef({ energy: 0, talking: false });
 
@@ -237,6 +223,52 @@ export function MintyBrain() {
         voices.find((v) => v.lang.startsWith('en') && v.localService) ??
         voices.find((v) => v.lang.startsWith('en')) ??
         null);
+
+  // macOS lazily spins up each voice's underlying synthesis engine on first
+  // use — Premium/neural voices ("Lilian (Premium)", "Zoe (Premium)")
+  // especially — and idles it back out after a period of silence. That
+  // cold-start is exactly the pause you hear when a reply switches from an
+  // English run to a Chinese run (or back) mid-sentence, since each run is a
+  // separate voice/utterance. Priming a voice with a near-silent,
+  // near-instant utterance forces its engine to spin up ahead of time, so
+  // the real switch later is fast. Deliberately bypasses speakRun — this
+  // isn't "real" speech, so it must never touch activeUtterRef/voiceRef
+  // (which would make the orb animate, or block maybeIdle from firing).
+  const warmVoice = (voice: SpeechSynthesisVoice | null) => {
+    if (!voice) return;
+    const u = new SpeechSynthesisUtterance(' ');
+    u.voice = voice;
+    u.volume = 0.01; // inaudible, but still forces the engine to actually run
+    speechSynthesis.speak(u);
+  };
+
+  // warms both the CJK and Latin voices currently resolved by pickVoice.
+  // Called once voices become available (below) and again at the top of
+  // every turn (see submit()) — that second call overlaps the warm-up with
+  // the LLM's "thinking" latency, so by the time the reply is ready to
+  // speak, both engines are already hot even if they'd gone idle since the
+  // last turn.
+  const warmBothVoices = (voices: SpeechSynthesisVoice[]) => {
+    warmVoice(pickVoice(true, voices));
+    warmVoice(pickVoice(false, voices));
+  };
+
+  // speechSynthesis.getVoices() can return an incomplete list (large voice
+  // files like "Lilian (Premium)" register after the smaller default ones)
+  // until 'voiceschanged' fires — calling getVoices() fresh on every
+  // utterance raced that, silently dropping to no CJK voice while English
+  // (whose default voices load first) kept working. Cache it and keep it
+  // fresh via the event instead.
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  useEffect(() => {
+    const load = () => {
+      voicesRef.current = speechSynthesis.getVoices();
+      warmBothVoices(voicesRef.current);
+    };
+    load();
+    speechSynthesis.addEventListener('voiceschanged', load);
+    return () => speechSynthesis.removeEventListener('voiceschanged', load);
+  }, []);
 
   const speakRun = (run: string, isCJK: boolean, voices: SpeechSynthesisVoice[]) => {
     const r = run.trim();
@@ -278,6 +310,9 @@ export function MintyBrain() {
     const t = text.trim();
     if (!t) return;
     speechSynthesis.cancel();
+    // re-warm both voice engines now, overlapping the cost with the LLM's
+    // "thinking" latency — see warmBothVoices for why this matters
+    warmBothVoices(voicesRef.current);
     enqueuedRef.current = 0;
     activeUtterRef.current = 0;
     finalSpokenRef.current = false;
