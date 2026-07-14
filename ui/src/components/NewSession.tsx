@@ -101,8 +101,6 @@ export function NewSession() {
                     title="Delete permanently"
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (!confirm(`Permanently delete "${h.label}"? This cannot be undone.`))
-                        return;
                       if (resume === h.id) setResume(null);
                       wsSend({ type: 'delete_history', dir: finalDir, id: h.id });
                     }}

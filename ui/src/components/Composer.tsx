@@ -209,6 +209,7 @@ export function Composer({ session }: { session: SessionSummary }) {
         </button>
         <textarea
           ref={taRef}
+          data-minty-chatbox="true"
           value={text}
           disabled={disabled}
           placeholder={
