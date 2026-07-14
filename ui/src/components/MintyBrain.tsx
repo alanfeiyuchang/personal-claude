@@ -6,15 +6,9 @@ import type { MintyPhase } from '../types';
 // transcribes locally via whisper.cpp (far better than the browser's Web Speech
 // API at code-switched Chinese/English, since that locks a whole utterance to
 // one BCP-47 language), sends the text to the server brain, speaks the reply
-// via a local Qwen3-TTS server (server/tts.mjs) — chosen over the browser's
-// speechSynthesis because it reads code-switched Chinese/English in one
-// continuous voice, instead of needing a different system voice per language —
-// and lets the brain drive the app (tasks land in the composer via
-// store.mintyTask). Falls back to a text input where the mic isn't available.
-
-// Qwen3-TTS speaker presets confirmed to work against the 0.6B Base model
-// this project runs (see server/tts_server.py) — cycled via the voice toggle
-const VOICES = ['Chelsie', 'Ethan', 'Vivian', 'Serena', 'Uncle_Fu', 'Ryan', 'Aiden', 'Dylan', 'Eric'];
+// (speechSynthesis), and lets the brain drive the app (tasks land in the
+// composer via store.mintyTask). Falls back to a text input where the mic
+// isn't available.
 
 const PHASE_COLOR: Record<MintyPhase, [number, number, number]> = {
   idle: [52, 211, 153], // mint
@@ -131,6 +125,7 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 export function MintyBrain() {
   const minty = useStore((s) => s.minty);
   const setMinty = useStore((s) => s.setMinty);
+  const mintyModel = useStore((s) => s.mintyModel);
   const phaseRef = useRef(minty.phase);
   phaseRef.current = minty.phase;
 
@@ -170,11 +165,12 @@ export function MintyBrain() {
     localStorage.setItem('pc-minty-lang', next);
   };
 
-  const [voice, setVoice] = useState(() => localStorage.getItem('pc-minty-voice') || VOICES[0]);
-  const cycleVoice = () => {
-    const next = VOICES[(VOICES.indexOf(voice) + 1) % VOICES.length];
-    setVoice(next);
-    localStorage.setItem('pc-minty-voice', next);
+  // 'qwen3-8b' must match LOCAL_MODEL in server/localmodel.mjs, 'haiku' must
+  // match CLOUD_MODEL in server/minty.mjs. Switching kills and respawns
+  // Minty's brain process server-side (see Minty.setModel), so it drops
+  // whatever it was mid-thought on — fine for a deliberate toggle.
+  const toggleMintyModel = () => {
+    wsSend({ type: 'set_minty_model', model: mintyModel === 'qwen3-8b' ? 'haiku' : 'qwen3-8b' });
   };
 
   // tooling hooks: let demos/tests drive the orb state without a mic/TTS
@@ -194,212 +190,96 @@ export function MintyBrain() {
     };
   }, [setMinty]);
 
+  // speechSynthesis.getVoices() can return an incomplete list (large voice
+  // files like "Lilian (Premium)" register after the smaller default ones)
+  // until 'voiceschanged' fires — calling getVoices() fresh on every
+  // utterance raced that, silently dropping to no CJK voice while English
+  // (whose default voices load first) kept working. Cache it and keep it
+  // fresh via the event instead.
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
+  useEffect(() => {
+    const load = () => { voicesRef.current = speechSynthesis.getVoices(); };
+    load();
+    speechSynthesis.addEventListener('voiceschanged', load);
+    return () => speechSynthesis.removeEventListener('voiceschanged', load);
+  }, []);
+
   // ── streaming speech: speak sentence-by-sentence as `say` streams in ─────
   const enqueuedRef = useRef(0); // chars of minty.stream already handed to TTS
   const activeUtterRef = useRef(0);
   const finalSpokenRef = useRef(false);
-  // live voice envelope: real playback amplitude drives this (see meterTick)
-  // — the orb reads it to animate in rhythm with the actual audio
+  // live voice envelope: word boundaries spike energy, silence decays it —
+  // the orb reads this to animate in rhythm with the actual audio
   const voiceRef = useRef({ energy: 0, talking: false });
-  // local TTS has real generation latency (unlike the browser's instant
-  // speechSynthesis) — minty.phase flips to 'speaking' as soon as text starts
-  // streaming, well before audio is ready, so the "speaking…" label used that
-  // alone would lie for a second or two. This tracks real playback instead.
-  const [audioPlaying, setAudioPlaying] = useState(false);
-
-  // one AudioContext reused for the whole session (same reasoning as the
-  // mic's recording graph — avoids paying setup cost per utterance), fed by
-  // streaming fetches against the local Qwen3-TTS server (see server/tts.mjs)
-  const playCtxRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  // sentences are streamed and played in order — this chain both serializes
-  // the fetches (the TTS process generates one at a time) and appends their
-  // audio to the timeline in order
-  const playChainRef = useRef<Promise<void>>(Promise.resolve());
-  // the AudioContext time up to which audio is already scheduled — each new
-  // PCM chunk starts exactly here so playback is gapless, the way the Mac
-  // voice is. Chunks arrive faster than realtime, so this stays ahead of
-  // ctx.currentTime once the first chunk lands.
-  const scheduledUntilRef = useRef(0);
-  const scheduledSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const pendingSourcesRef = useRef(0); // scheduled-but-not-yet-ended sources
-  const meterRafRef = useRef(0);
-  const audioStartedRef = useRef(false); // have we flipped the label to "speaking" this turn
-  // bumped on interrupt/submit to invalidate anything still in-flight or
-  // queued, so a stale reply can't start playing after the fact
-  const genRef = useRef(0);
 
   const maybeIdle = () => {
-    if (
-      finalSpokenRef.current &&
-      activeUtterRef.current <= 0 &&
-      pendingSourcesRef.current <= 0 &&
-      phaseRef.current === 'speaking'
-    ) {
+    if (finalSpokenRef.current && activeUtterRef.current <= 0 && phaseRef.current === 'speaking') {
       setMinty({ phase: 'idle' });
-      setAudioPlaying(false);
     }
   };
 
-  const ensurePlayCtx = () => {
-    if (!playCtxRef.current) {
-      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
-      const ctx: AudioContext = new Ctx();
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      analyser.connect(ctx.destination);
-      playCtxRef.current = ctx;
-      analyserRef.current = analyser;
-    }
-    return { ctx: playCtxRef.current!, analyser: analyserRef.current! };
-  };
+  const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+  // a run of CJK text (with its adjoining CJK punctuation) or a run of
+  // everything else -- splitting on these boundaries is what lets one
+  // code-switched sentence get read by two different voices in turn
+  const RUN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff0c\u3002\uff01\uff1f\uff1b\uff1a\u3001\u201c\u201d\u2018\u2019]+|[^\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/g;
 
-  // Browsers only let an AudioContext produce sound if it's created/resumed
-  // from directly inside a user-gesture handler — the mic's recording
-  // context already gets this (see rec.ctx.resume() in startListening).
-  // The playback context didn't: it was first created deep inside the async
-  // fetch/stream chain in scheduleChunk, long after any gesture, so it sat
-  // permanently 'suspended' — src.start() ran without error but produced no
-  // sound at all. Call this synchronously at the top of every gesture that
-  // can lead to a spoken reply (click, Space, typed Enter).
-  const primePlayCtx = () => {
-    const { ctx } = ensurePlayCtx();
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-  };
+  const pickVoice = (isCJK: boolean, voices: SpeechSynthesisVoice[]) =>
+    isCJK
+      ? (voices.find((v) => v.name === 'Lilian (Premium)') ??
+        voices.find((v) => v.name === 'Tingting') ??
+        voices.find((v) => v.lang.replace('_', '-').startsWith('zh') && v.localService) ??
+        voices.find((v) => v.lang.replace('_', '-').startsWith('zh')) ??
+        null)
+      : (voices.find((v) => v.name === 'Zoe (Premium)') ??
+        voices.find((v) => v.name === 'Ava (Premium)') ??
+        voices.find((v) => v.name === 'Samantha') ??
+        voices.find((v) => v.lang.startsWith('en') && v.localService) ??
+        voices.find((v) => v.lang.startsWith('en')) ??
+        null);
 
-  const meterTick = () => {
-    const analyser = analyserRef.current;
-    if (!analyser) return;
-    const data = new Uint8Array(analyser.frequencyBinCount);
-    analyser.getByteTimeDomainData(data);
-    let sum = 0;
-    for (let i = 0; i < data.length; i++) {
-      const v = (data[i] - 128) / 128;
-      sum += v * v;
-    }
-    const rms = Math.sqrt(sum / data.length);
-    voiceRef.current.energy = Math.max(voiceRef.current.energy, Math.min(1, rms * 3.5));
-    if (voiceRef.current.talking) meterRafRef.current = requestAnimationFrame(meterTick);
-  };
-
-  // schedule one PCM chunk to play immediately after everything queued so far
-  const scheduleChunk = (samples: Float32Array, sampleRate: number, gen: number) => {
-    if (gen !== genRef.current || samples.length === 0) return;
-    const { ctx, analyser } = ensurePlayCtx();
-    const buf = ctx.createBuffer(1, samples.length, sampleRate);
-    buf.getChannelData(0).set(samples);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    src.connect(analyser);
-    // small lead-in only bites on the very first chunk (when nothing is
-    // scheduled yet); after that startAt == the end of the last chunk
-    const startAt = Math.max(ctx.currentTime + 0.08, scheduledUntilRef.current);
-    src.start(startAt);
-    scheduledUntilRef.current = startAt + buf.duration;
-    scheduledSourcesRef.current.add(src);
-    pendingSourcesRef.current++;
-
-    if (!voiceRef.current.talking) {
+  const speakRun = (run: string, isCJK: boolean, voices: SpeechSynthesisVoice[]) => {
+    const r = run.trim();
+    if (!r) return;
+    const u = new SpeechSynthesisUtterance(r);
+    u.lang = isCJK ? 'zh-CN' : 'en-US';
+    u.voice = pickVoice(isCJK, voices);
+    u.rate = 1.05;
+    activeUtterRef.current++;
+    u.onstart = () => {
       voiceRef.current.talking = true;
-      if (!meterRafRef.current) meterRafRef.current = requestAnimationFrame(meterTick);
-    }
-    // flip the label to "speaking…" exactly when the first sound becomes
-    // audible, not when text started streaming
-    if (!audioStartedRef.current) {
-      audioStartedRef.current = true;
-      const delayMs = Math.max(0, (startAt - ctx.currentTime) * 1000);
-      setTimeout(() => { if (gen === genRef.current) setAudioPlaying(true); }, delayMs);
-    }
-
-    src.onended = () => {
-      scheduledSourcesRef.current.delete(src);
-      pendingSourcesRef.current--;
-      if (pendingSourcesRef.current <= 0 && activeUtterRef.current <= 0) {
-        voiceRef.current.talking = false;
-        if (meterRafRef.current) { cancelAnimationFrame(meterRafRef.current); meterRafRef.current = 0; }
-        scheduledUntilRef.current = 0;
-        maybeIdle();
-      }
+      voiceRef.current.energy = Math.max(voiceRef.current.energy, 0.7);
     };
-  };
-
-  // stream one sentence's audio from the server and schedule it as it arrives
-  const streamSentence = async (text: string, gen: number) => {
-    try {
-      const res = await fetch(`/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`);
-      if (!res.ok || !res.body) throw new Error(`tts ${res.status}`);
-      const sampleRate = Number(res.headers.get('x-sample-rate')) || 24000;
-      const reader = res.body.getReader();
-      let carry: Uint8Array | null = null; // odd trailing byte between reads
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (gen !== genRef.current) { reader.cancel().catch(() => {}); break; }
-        let bytes = value;
-        if (carry) {
-          const merged = new Uint8Array(carry.length + value.length);
-          merged.set(carry);
-          merged.set(value, carry.length);
-          bytes = merged;
-          carry = null;
-        }
-        const usable = bytes.length - (bytes.length % 2);
-        if (usable < bytes.length) carry = bytes.slice(usable);
-        if (usable === 0) continue;
-        // little-endian int16 → float; DataView tolerates any byte alignment
-        const dv = new DataView(bytes.buffer, bytes.byteOffset, usable);
-        const f32 = new Float32Array(usable / 2);
-        for (let i = 0; i < f32.length; i++) f32[i] = dv.getInt16(i * 2, true) / 32768;
-        scheduleChunk(f32, sampleRate, gen);
-      }
-    } catch {
-      /* network/tts error — just drop this sentence */
-    } finally {
-      // only settle our own turn's count — if gen moved on, stopSpeaking
-      // already zeroed it and a new turn may be counting up
-      if (gen === genRef.current) {
-        activeUtterRef.current--;
-        maybeIdle();
-      }
-    }
+    u.onboundary = () => {
+      voiceRef.current.energy = 1; // a word is being spoken right now
+    };
+    u.onend = u.onerror = () => {
+      activeUtterRef.current--;
+      if (activeUtterRef.current <= 0) voiceRef.current.talking = false;
+      maybeIdle();
+    };
+    speechSynthesis.speak(u); // utterances queue natively, in order
   };
 
   const speakChunk = (text: string) => {
     const t = text.trim();
     if (!t) return;
-    const gen = genRef.current;
-    activeUtterRef.current++;
-    // chain so sentences hit the server (and the timeline) strictly in order
-    playChainRef.current = playChainRef.current.then(() => streamSentence(t, gen));
-  };
-
-  // stops anything currently playing and drops anything queued/in-flight —
-  // the local-TTS equivalent of speechSynthesis.cancel()
-  const stopSpeaking = () => {
-    genRef.current++;
-    playChainRef.current = Promise.resolve();
-    for (const s of scheduledSourcesRef.current) {
-      try { s.onended = null; s.stop(); } catch { /* already stopped */ }
-    }
-    scheduledSourcesRef.current.clear();
-    pendingSourcesRef.current = 0;
-    scheduledUntilRef.current = 0;
-    activeUtterRef.current = 0;
-    audioStartedRef.current = false;
-    if (meterRafRef.current) {
-      cancelAnimationFrame(meterRafRef.current);
-      meterRafRef.current = 0;
-    }
-    voiceRef.current.talking = false;
-    voiceRef.current.energy = 0;
-    setAudioPlaying(false);
+    // belt-and-suspenders: if 'voiceschanged' never fired (happens on some
+    // browsers), try one direct read before falling back to voice-less
+    if (!voicesRef.current.length) voicesRef.current = speechSynthesis.getVoices();
+    // split code-switched text (e.g. "这个 API 的 rate limit 是多少") into
+    // per-script runs so each run is spoken in its own language's voice,
+    // instead of reading the whole sentence in whichever voice matched first
+    const runs = t.match(RUN_RE) || [t];
+    for (const run of runs) speakRun(run, CJK_RE.test(run), voicesRef.current);
   };
 
   const submit = (text: string) => {
     const t = text.trim();
     if (!t) return;
-    stopSpeaking();
+    speechSynthesis.cancel();
     enqueuedRef.current = 0;
+    activeUtterRef.current = 0;
     finalSpokenRef.current = false;
     setMinty({ phase: 'thinking', transcript: t, say: '', stream: '', done: false });
     // the session the user is currently looking at — Minty treats this as the
@@ -448,7 +328,6 @@ export function MintyBrain() {
   }, [transcribeResult]);
 
   const startListening = async () => {
-    primePlayCtx(); // must run synchronously within this gesture — see comment above
     try {
       // reuse the already-warm graph if we have one; only the very first
       // call in the session pays for getUserMedia + AudioContext setup
@@ -488,9 +367,10 @@ export function MintyBrain() {
   // and tells the server to abandon the in-flight brain turn (see minty.mjs
   // Minty.interrupt) so its eventual reply/deltas don't land after the fact
   const interruptMinty = () => {
-    stopSpeaking();
+    speechSynthesis.cancel();
     wsSend({ type: 'minty_interrupt' });
     enqueuedRef.current = 0;
+    activeUtterRef.current = 0;
     finalSpokenRef.current = false;
     setMinty({ phase: 'idle', say: '', stream: '' });
   };
@@ -565,25 +445,19 @@ export function MintyBrain() {
     };
   }, [micAvailable]);
 
-  // 'speaking' flips true the moment text starts streaming in, well before
-  // the local TTS server has actually generated audio — show "thinking…"
-  // until sound really starts so the label doesn't lie
-  const phaseLabel =
-    minty.phase === 'speaking' && !audioPlaying ? PHASE_LABEL.thinking : PHASE_LABEL[minty.phase];
-
   return (
     <div className="minty-dock">
       <div className="panel-title minty-title">
         <span>
-          Minty <span className="minty-phase">{phaseLabel}</span>
+          Minty <span className="minty-phase">{PHASE_LABEL[minty.phase]}</span>
         </span>
         <div className="minty-title-actions">
           <button
             className="minty-lang"
-            title={`Voice: ${voice} (click to cycle)`}
-            onClick={cycleVoice}
+            title={mintyModel === 'qwen3-8b' ? 'Brain: Qwen3 8B, local & offline (click to switch to Haiku)' : 'Brain: Claude Haiku, cloud (click to switch to local Qwen3)'}
+            onClick={toggleMintyModel}
           >
-            {voice}
+            {mintyModel === 'qwen3-8b' ? 'Qwen' : 'Haiku'}
           </button>
           <button
             className="minty-lang"
@@ -612,7 +486,6 @@ export function MintyBrain() {
           onChange={(e) => setTyped(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && typed.trim()) {
-              primePlayCtx(); // mic-less path never calls startListening(), so prime here instead
               submit(typed);
               setTyped('');
             }
@@ -623,7 +496,6 @@ export function MintyBrain() {
   );
 }
 
-// ── the orb ────────────────────────────────────────────────────────────────
 // A layered particle system: rotating neural web + breathing plasma core +
 // free-floating motes + synapse pulses traveling the web + sound-wave rings
 // (inward while listening, outward while speaking) + sparks while thinking.

@@ -15,8 +15,6 @@ import { getGitInfo } from './git.mjs';
 import { getSkillMeta } from './skills.mjs';
 import { minty } from './minty.mjs';
 import { transcribe, stopWhisper, warmUpWhisper } from './whisper.mjs';
-import { synthesizeStream, stopTts, warmUpTts } from './tts.mjs';
-import { Readable } from 'node:stream';
 import { graphifyStatus, rebuildGraph, GRAPHIFY_OUT } from './graphify.mjs';
 import { MintyMCPServer, setMintyMCPSessionManager } from './minty-mcp.mjs';
 import { isLocalModel, ensureLocalModelReady, localModelEnv, warmUpLocalModel, stopLocalModel } from './localmodel.mjs';
@@ -79,28 +77,6 @@ const httpServer = createServer(async (req, res) => {
       const body = await readFile(gfile);
       const type = MIME[extname(gfile)] || 'application/octet-stream';
       res.writeHead(200, { 'content-type': type }).end(body);
-      return;
-    }
-
-    if (url.pathname === '/tts') {
-      const text = url.searchParams.get('text') || '';
-      if (!text.trim()) {
-        res.writeHead(400).end();
-        return;
-      }
-      try {
-        // stream the raw PCM straight from the TTS process to the browser as
-        // it's generated — see synthesizeStream / server/tts_server.py
-        const ttsRes = await synthesizeStream(text, url.searchParams.get('voice') || undefined);
-        res.writeHead(200, {
-          'content-type': 'audio/pcm',
-          'x-sample-rate': ttsRes.headers.get('x-sample-rate') || '24000',
-        });
-        Readable.fromWeb(ttsRes.body).pipe(res);
-      } catch (err) {
-        res.writeHead(500, { 'content-type': 'text/plain' });
-        res.end(err.message);
-      }
       return;
     }
 
@@ -423,9 +399,6 @@ warmUpWhisper();
 // cold start (Ollama + the translation proxy booting) is much longer than
 // whisper's, so it's worth overlapping with server startup too.
 if (minty.usesLocalModel()) warmUpLocalModel();
-// same reasoning — the local TTS server's MLX model load is worth
-// overlapping with the rest of startup too.
-warmUpTts();
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`Personal Claude → http://localhost:${PORT}`);
@@ -437,7 +410,6 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     minty.stop();
     stopWhisper();
     stopLocalModel();
-    stopTts();
     httpServer.close();
     setTimeout(() => process.exit(0), 500).unref();
   });
