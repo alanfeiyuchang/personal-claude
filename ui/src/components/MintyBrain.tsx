@@ -9,6 +9,36 @@ import type { MintyPhase } from '../types';
 // (speechSynthesis), and lets the brain drive the app (tasks land in the
 // composer via store.mintyTask). Falls back to a text input where the mic
 // isn't available.
+//
+// TTS is the browser's Web Speech API (SpeechSynthesisUtterance), not native
+// AVSpeechSynthesizer — there's no Swift layer in this project, it's a React
+// page. That API has real limits worth knowing before reaching for a fix:
+// no SSML (<break>, <phoneme> tags are read aloud as literal text, not
+// honored), no access to AVSpeechSynthesizer's IPA/phonetic override, and no
+// "synthesize to a buffer without playing" primitive — speak() always both
+// synthesizes and (queues to) play. So "pre-generate the next sentence in the
+// background" isn't literally possible here; the closest real lever is
+// queuing text to speak() earlier (see the clause-level flush below), since
+// speak() calls queue natively and the OS can start preparing utterance N+1
+// while N is still playing.
+
+// per-language rate: Mandarin carries more information per syllable than
+// English, and empirically reads more naturally a touch slower while English
+// can run a touch faster — tune by ear, these aren't derived from anything
+// more rigorous than listening to it
+const CJK_RATE = 1.0;
+const LATIN_RATE = 1.08;
+// deliberate pause inserted only at a language *switch* (CJK run followed by
+// a Latin run, or vice versa) — separate from and in tension with the gap
+// this whole effort is trying to shrink: 0ms is the lowest-latency choice,
+// but some listeners read a truly instantaneous voice swap as a glitch
+// rather than an intentional switch. Tune per taste; 0 disables it entirely.
+const BOUNDARY_PAUSE_MS = 60;
+// once buffered reply text passes this length with no sentence-ending
+// punctuation yet, flush at the next clause break instead of waiting for the
+// sentence to finish — gets long sentences into the native speak() queue
+// (and therefore "preparing to play") sooner
+const CLAUSE_FLUSH_THRESHOLD = 30;
 
 const PHASE_COLOR: Record<MintyPhase, [number, number, number]> = {
   idle: [52, 211, 153], // mint
@@ -194,6 +224,15 @@ export function MintyBrain() {
   const enqueuedRef = useRef(0); // chars of minty.stream already handed to TTS
   const activeUtterRef = useRef(0);
   const finalSpokenRef = useRef(false);
+  // performance.now() when the previous utterance's onend fired — diffed
+  // against the next utterance's onstart to log real inter-utterance gap
+  // times (see speakRun). null between turns so a stale previous turn's
+  // timestamp never gets diffed against a new, unrelated one.
+  const lastUtterEndRef = useRef<number | null>(null);
+  // setTimeout ids for scheduled boundary-pause speak() calls (see
+  // BOUNDARY_PAUSE_MS) — must be cancelable, or an interrupt/new submit
+  // could let a stale utterance fire after the fact
+  const pendingPauseTimeoutsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   // live voice envelope: word boundaries spike energy, silence decays it \u2014
   // the orb reads this to animate in rhythm with the actual audio
   const voiceRef = useRef({ energy: 0, talking: false });
@@ -270,15 +309,24 @@ export function MintyBrain() {
     return () => speechSynthesis.removeEventListener('voiceschanged', load);
   }, []);
 
-  const speakRun = (run: string, isCJK: boolean, voices: SpeechSynthesisVoice[]) => {
+  const speakRun = (run: string, isCJK: boolean, voices: SpeechSynthesisVoice[], pauseBefore = false) => {
     const r = run.trim();
     if (!r) return;
+    const voice = pickVoice(isCJK, voices);
     const u = new SpeechSynthesisUtterance(r);
-    u.lang = isCJK ? 'zh-CN' : 'en-US';
-    u.voice = pickVoice(isCJK, voices);
-    u.rate = 1.05;
+    // prefer the picked voice's own BCP-47 locale over a hardcoded
+    // zh-CN/en-US — keeps pronunciation rules matched to whichever voice
+    // actually got picked (e.g. a zh-TW voice reads differently under zh-TW
+    // than if forced to zh-CN)
+    u.lang = voice?.lang || (isCJK ? 'zh-CN' : 'en-US');
+    u.voice = voice;
+    u.rate = isCJK ? CJK_RATE : LATIN_RATE;
     activeUtterRef.current++;
     u.onstart = () => {
+      if (lastUtterEndRef.current != null) {
+        const gapMs = performance.now() - lastUtterEndRef.current;
+        console.debug(`[minty-tts] gap ${gapMs.toFixed(0)}ms -> "${r.slice(0, 16)}" (${isCJK ? 'zh' : 'en'}/${voice?.name ?? 'default'})`);
+      }
       voiceRef.current.talking = true;
       voiceRef.current.energy = Math.max(voiceRef.current.energy, 0.7);
     };
@@ -286,11 +334,24 @@ export function MintyBrain() {
       voiceRef.current.energy = 1; // a word is being spoken right now
     };
     u.onend = u.onerror = () => {
+      lastUtterEndRef.current = performance.now();
       activeUtterRef.current--;
       if (activeUtterRef.current <= 0) voiceRef.current.talking = false;
       maybeIdle();
     };
-    speechSynthesis.speak(u); // utterances queue natively, in order
+    // utterances queue natively, in order, regardless of *when* speak() is
+    // called relative to each other — so delaying just this call (not the
+    // activeUtterRef accounting above) is enough to insert a real pause
+    // without breaking the orb's "still speaking" bookkeeping
+    if (pauseBefore && BOUNDARY_PAUSE_MS > 0) {
+      const id = setTimeout(() => {
+        pendingPauseTimeoutsRef.current.delete(id);
+        speechSynthesis.speak(u);
+      }, BOUNDARY_PAUSE_MS);
+      pendingPauseTimeoutsRef.current.add(id);
+    } else {
+      speechSynthesis.speak(u);
+    }
   };
 
   const speakChunk = (text: string) => {
@@ -303,13 +364,31 @@ export function MintyBrain() {
     // per-script runs so each run is spoken in its own language's voice,
     // instead of reading the whole sentence in whichever voice matched first
     const runs = t.match(RUN_RE) || [t];
-    for (const run of runs) speakRun(run, CJK_RE.test(run), voicesRef.current);
+    let prevIsCJK: boolean | null = null;
+    for (const run of runs) {
+      const isCJK = CJK_RE.test(run);
+      // only pause at an actual language switch, not between every run —
+      // most "runs" are just CJK punctuation attached to the CJK side
+      const pauseBefore = prevIsCJK !== null && isCJK !== prevIsCJK;
+      speakRun(run, isCJK, voicesRef.current, pauseBefore);
+      prevIsCJK = isCJK;
+    }
+  };
+
+  // cancels any boundary-pause speak() calls still waiting on their
+  // setTimeout — without this, a stale utterance from the turn being
+  // interrupted could fire after speechSynthesis.cancel() already ran
+  const cancelPendingPauses = () => {
+    for (const id of pendingPauseTimeoutsRef.current) clearTimeout(id);
+    pendingPauseTimeoutsRef.current.clear();
   };
 
   const submit = (text: string) => {
     const t = text.trim();
     if (!t) return;
     speechSynthesis.cancel();
+    cancelPendingPauses();
+    lastUtterEndRef.current = null; // don't diff this turn's first gap against the last turn's
     // re-warm both voice engines now, overlapping the cost with the LLM's
     // "thinking" latency — see warmBothVoices for why this matters
     warmBothVoices(voicesRef.current);
@@ -326,7 +405,17 @@ export function MintyBrain() {
   // (CJK sentence enders need no trailing space; latin ones do)
   useEffect(() => {
     const pending = minty.stream.slice(enqueuedRef.current);
-    const m = pending.match(/^[\s\S]*(?:[.!?…](?=\s|$)|[。！？；])/);
+    let m = pending.match(/^[\s\S]*(?:[.!?…](?=\s|$)|[。！？；])/);
+    // no sentence-ending punctuation yet, but the buffer is already long —
+    // there's no real "pre-synthesize in the background" primitive in the
+    // Web Speech API (see the top-of-file note), so the closest thing to it
+    // is handing text to speak() sooner: flush at the last clause break
+    // instead of waiting for the sentence to end, so the native queue (and
+    // therefore the OS, preparing the next utterance) gets a head start
+    // instead of sitting idle through an entire long sentence
+    if (!m && pending.length > CLAUSE_FLUSH_THRESHOLD) {
+      m = pending.match(/^[\s\S]*[,，、]/);
+    }
     if (m) {
       speakChunk(m[0]);
       enqueuedRef.current += m[0].length;
@@ -403,6 +492,8 @@ export function MintyBrain() {
   // Minty.interrupt) so its eventual reply/deltas don't land after the fact
   const interruptMinty = () => {
     speechSynthesis.cancel();
+    cancelPendingPauses();
+    lastUtterEndRef.current = null;
     wsSend({ type: 'minty_interrupt' });
     enqueuedRef.current = 0;
     activeUtterRef.current = 0;
