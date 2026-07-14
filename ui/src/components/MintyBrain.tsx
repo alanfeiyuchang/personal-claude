@@ -12,7 +12,9 @@ import type { MintyPhase } from '../types';
 // and lets the brain drive the app (tasks land in the composer via
 // store.mintyTask). Falls back to a text input where the mic isn't available.
 
-const MINTY_VOICE = 'Chelsie';
+// Qwen3-TTS speaker presets confirmed to work against the 0.6B Base model
+// this project runs (see server/tts_server.py) — cycled via the voice toggle
+const VOICES = ['Chelsie', 'Ethan', 'Vivian', 'Serena', 'Uncle_Fu', 'Ryan', 'Aiden', 'Dylan', 'Eric'];
 
 const PHASE_COLOR: Record<MintyPhase, [number, number, number]> = {
   idle: [52, 211, 153], // mint
@@ -129,7 +131,6 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 export function MintyBrain() {
   const minty = useStore((s) => s.minty);
   const setMinty = useStore((s) => s.setMinty);
-  const mintyModel = useStore((s) => s.mintyModel);
   const phaseRef = useRef(minty.phase);
   phaseRef.current = minty.phase;
 
@@ -169,12 +170,11 @@ export function MintyBrain() {
     localStorage.setItem('pc-minty-lang', next);
   };
 
-  // 'qwen3-8b' must match LOCAL_MODEL in server/localmodel.mjs, 'haiku' must
-  // match CLOUD_MODEL in server/minty.mjs. Switching kills and respawns
-  // Minty's brain process server-side (see Minty.setModel), so it drops
-  // whatever it was mid-thought on — fine for a deliberate toggle.
-  const toggleMintyModel = () => {
-    wsSend({ type: 'set_minty_model', model: mintyModel === 'qwen3-8b' ? 'haiku' : 'qwen3-8b' });
+  const [voice, setVoice] = useState(() => localStorage.getItem('pc-minty-voice') || VOICES[0]);
+  const cycleVoice = () => {
+    const next = VOICES[(VOICES.indexOf(voice) + 1) % VOICES.length];
+    setVoice(next);
+    localStorage.setItem('pc-minty-voice', next);
   };
 
   // tooling hooks: let demos/tests drive the orb state without a mic/TTS
@@ -201,6 +201,11 @@ export function MintyBrain() {
   // live voice envelope: real playback amplitude drives this (see meterTick)
   // — the orb reads it to animate in rhythm with the actual audio
   const voiceRef = useRef({ energy: 0, talking: false });
+  // local TTS has real generation latency (unlike the browser's instant
+  // speechSynthesis) — minty.phase flips to 'speaking' as soon as text starts
+  // streaming, well before audio is ready, so the "speaking…" label used that
+  // alone would lie for a second or two. This tracks real playback instead.
+  const [audioPlaying, setAudioPlaying] = useState(false);
 
   const maybeIdle = () => {
     if (finalSpokenRef.current && activeUtterRef.current <= 0 && phaseRef.current === 'speaking') {
@@ -260,12 +265,14 @@ export function MintyBrain() {
       src.connect(analyser);
       currentSourceRef.current = src;
       voiceRef.current.talking = true;
+      setAudioPlaying(true); // first real sound — see the "speaking…" label fix below
       if (!meterRafRef.current) meterRafRef.current = requestAnimationFrame(meterTick);
       src.onended = () => {
         currentSourceRef.current = null;
         activeUtterRef.current--;
         if (activeUtterRef.current <= 0) {
           voiceRef.current.talking = false;
+          setAudioPlaying(false);
           cancelAnimationFrame(meterRafRef.current);
           meterRafRef.current = 0;
         }
@@ -277,7 +284,7 @@ export function MintyBrain() {
 
   const fetchAndDecode = async (text: string, gen: number): Promise<AudioBuffer | null> => {
     try {
-      const res = await fetch(`/tts?text=${encodeURIComponent(text)}&voice=${MINTY_VOICE}`);
+      const res = await fetch(`/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`);
       if (!res.ok) throw new Error(`tts ${res.status}`);
       const arr = await res.arrayBuffer();
       if (gen !== genRef.current) return null;
@@ -322,6 +329,7 @@ export function MintyBrain() {
     activeUtterRef.current = 0;
     voiceRef.current.talking = false;
     voiceRef.current.energy = 0;
+    setAudioPlaying(false);
   };
 
   const submit = (text: string) => {
@@ -493,19 +501,25 @@ export function MintyBrain() {
     };
   }, [micAvailable]);
 
+  // 'speaking' flips true the moment text starts streaming in, well before
+  // the local TTS server has actually generated audio — show "thinking…"
+  // until sound really starts so the label doesn't lie
+  const phaseLabel =
+    minty.phase === 'speaking' && !audioPlaying ? PHASE_LABEL.thinking : PHASE_LABEL[minty.phase];
+
   return (
     <div className="minty-dock">
       <div className="panel-title minty-title">
         <span>
-          Minty <span className="minty-phase">{PHASE_LABEL[minty.phase]}</span>
+          Minty <span className="minty-phase">{phaseLabel}</span>
         </span>
         <div className="minty-title-actions">
           <button
             className="minty-lang"
-            title={mintyModel === 'qwen3-8b' ? 'Brain: Qwen3 8B, local & offline (click to switch to Haiku)' : 'Brain: Claude Haiku, cloud (click to switch to local Qwen3)'}
-            onClick={toggleMintyModel}
+            title={`Voice: ${voice} (click to cycle)`}
+            onClick={cycleVoice}
           >
-            {mintyModel === 'qwen3-8b' ? 'Qwen' : 'Haiku'}
+            {voice}
           </button>
           <button
             className="minty-lang"
