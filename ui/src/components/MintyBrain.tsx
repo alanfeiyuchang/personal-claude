@@ -207,26 +207,39 @@ export function MintyBrain() {
   // alone would lie for a second or two. This tracks real playback instead.
   const [audioPlaying, setAudioPlaying] = useState(false);
 
-  const maybeIdle = () => {
-    if (finalSpokenRef.current && activeUtterRef.current <= 0 && phaseRef.current === 'speaking') {
-      setMinty({ phase: 'idle' });
-    }
-  };
-
   // one AudioContext reused for the whole session (same reasoning as the
   // mic's recording graph — avoids paying setup cost per utterance), fed by
-  // fetches against the local Qwen3-TTS server (see server/tts.mjs)
+  // streaming fetches against the local Qwen3-TTS server (see server/tts.mjs)
   const playCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  // utterances are fetched as soon as their text is ready but must still
-  // play back in order — this chain is what gives fetch (which can race
-  // ahead of playback) native speechSynthesis-style queuing
+  // sentences are streamed and played in order — this chain both serializes
+  // the fetches (the TTS process generates one at a time) and appends their
+  // audio to the timeline in order
   const playChainRef = useRef<Promise<void>>(Promise.resolve());
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  // the AudioContext time up to which audio is already scheduled — each new
+  // PCM chunk starts exactly here so playback is gapless, the way the Mac
+  // voice is. Chunks arrive faster than realtime, so this stays ahead of
+  // ctx.currentTime once the first chunk lands.
+  const scheduledUntilRef = useRef(0);
+  const scheduledSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const pendingSourcesRef = useRef(0); // scheduled-but-not-yet-ended sources
   const meterRafRef = useRef(0);
+  const audioStartedRef = useRef(false); // have we flipped the label to "speaking" this turn
   // bumped on interrupt/submit to invalidate anything still in-flight or
   // queued, so a stale reply can't start playing after the fact
   const genRef = useRef(0);
+
+  const maybeIdle = () => {
+    if (
+      finalSpokenRef.current &&
+      activeUtterRef.current <= 0 &&
+      pendingSourcesRef.current <= 0 &&
+      phaseRef.current === 'speaking'
+    ) {
+      setMinty({ phase: 'idle' });
+      setAudioPlaying(false);
+    }
+  };
 
   const ensurePlayCtx = () => {
     if (!playCtxRef.current) {
@@ -256,42 +269,85 @@ export function MintyBrain() {
     if (voiceRef.current.talking) meterRafRef.current = requestAnimationFrame(meterTick);
   };
 
-  const playBuffer = (buffer: AudioBuffer, gen: number) =>
-    new Promise<void>((resolve) => {
-      if (gen !== genRef.current) { resolve(); return; }
-      const { ctx, analyser } = ensurePlayCtx();
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-      src.connect(analyser);
-      currentSourceRef.current = src;
-      voiceRef.current.talking = true;
-      setAudioPlaying(true); // first real sound — see the "speaking…" label fix below
-      if (!meterRafRef.current) meterRafRef.current = requestAnimationFrame(meterTick);
-      src.onended = () => {
-        currentSourceRef.current = null;
-        activeUtterRef.current--;
-        if (activeUtterRef.current <= 0) {
-          voiceRef.current.talking = false;
-          setAudioPlaying(false);
-          cancelAnimationFrame(meterRafRef.current);
-          meterRafRef.current = 0;
-        }
-        maybeIdle();
-        resolve();
-      };
-      src.start();
-    });
+  // schedule one PCM chunk to play immediately after everything queued so far
+  const scheduleChunk = (samples: Float32Array, sampleRate: number, gen: number) => {
+    if (gen !== genRef.current || samples.length === 0) return;
+    const { ctx, analyser } = ensurePlayCtx();
+    const buf = ctx.createBuffer(1, samples.length, sampleRate);
+    buf.getChannelData(0).set(samples);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(analyser);
+    // small lead-in only bites on the very first chunk (when nothing is
+    // scheduled yet); after that startAt == the end of the last chunk
+    const startAt = Math.max(ctx.currentTime + 0.08, scheduledUntilRef.current);
+    src.start(startAt);
+    scheduledUntilRef.current = startAt + buf.duration;
+    scheduledSourcesRef.current.add(src);
+    pendingSourcesRef.current++;
 
-  const fetchAndDecode = async (text: string, gen: number): Promise<AudioBuffer | null> => {
+    if (!voiceRef.current.talking) {
+      voiceRef.current.talking = true;
+      if (!meterRafRef.current) meterRafRef.current = requestAnimationFrame(meterTick);
+    }
+    // flip the label to "speaking…" exactly when the first sound becomes
+    // audible, not when text started streaming
+    if (!audioStartedRef.current) {
+      audioStartedRef.current = true;
+      const delayMs = Math.max(0, (startAt - ctx.currentTime) * 1000);
+      setTimeout(() => { if (gen === genRef.current) setAudioPlaying(true); }, delayMs);
+    }
+
+    src.onended = () => {
+      scheduledSourcesRef.current.delete(src);
+      pendingSourcesRef.current--;
+      if (pendingSourcesRef.current <= 0 && activeUtterRef.current <= 0) {
+        voiceRef.current.talking = false;
+        if (meterRafRef.current) { cancelAnimationFrame(meterRafRef.current); meterRafRef.current = 0; }
+        scheduledUntilRef.current = 0;
+        maybeIdle();
+      }
+    };
+  };
+
+  // stream one sentence's audio from the server and schedule it as it arrives
+  const streamSentence = async (text: string, gen: number) => {
     try {
       const res = await fetch(`/tts?text=${encodeURIComponent(text)}&voice=${encodeURIComponent(voice)}`);
-      if (!res.ok) throw new Error(`tts ${res.status}`);
-      const arr = await res.arrayBuffer();
-      if (gen !== genRef.current) return null;
-      const { ctx } = ensurePlayCtx();
-      return await ctx.decodeAudioData(arr);
+      if (!res.ok || !res.body) throw new Error(`tts ${res.status}`);
+      const sampleRate = Number(res.headers.get('x-sample-rate')) || 24000;
+      const reader = res.body.getReader();
+      let carry: Uint8Array | null = null; // odd trailing byte between reads
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (gen !== genRef.current) { reader.cancel().catch(() => {}); break; }
+        let bytes = value;
+        if (carry) {
+          const merged = new Uint8Array(carry.length + value.length);
+          merged.set(carry);
+          merged.set(value, carry.length);
+          bytes = merged;
+          carry = null;
+        }
+        const usable = bytes.length - (bytes.length % 2);
+        if (usable < bytes.length) carry = bytes.slice(usable);
+        if (usable === 0) continue;
+        // little-endian int16 → float; DataView tolerates any byte alignment
+        const dv = new DataView(bytes.buffer, bytes.byteOffset, usable);
+        const f32 = new Float32Array(usable / 2);
+        for (let i = 0; i < f32.length; i++) f32[i] = dv.getInt16(i * 2, true) / 32768;
+        scheduleChunk(f32, sampleRate, gen);
+      }
     } catch {
-      return null;
+      /* network/tts error — just drop this sentence */
+    } finally {
+      // only settle our own turn's count — if gen moved on, stopSpeaking
+      // already zeroed it and a new turn may be counting up
+      if (gen === genRef.current) {
+        activeUtterRef.current--;
+        maybeIdle();
+      }
     }
   };
 
@@ -300,17 +356,8 @@ export function MintyBrain() {
     if (!t) return;
     const gen = genRef.current;
     activeUtterRef.current++;
-    const bufferPromise = fetchAndDecode(t, gen);
-    playChainRef.current = playChainRef.current.then(async () => {
-      if (gen !== genRef.current) { activeUtterRef.current--; maybeIdle(); return; }
-      const buffer = await bufferPromise;
-      if (!buffer || gen !== genRef.current) {
-        activeUtterRef.current--;
-        maybeIdle();
-        return;
-      }
-      await playBuffer(buffer, gen);
-    });
+    // chain so sentences hit the server (and the timeline) strictly in order
+    playChainRef.current = playChainRef.current.then(() => streamSentence(t, gen));
   };
 
   // stops anything currently playing and drops anything queued/in-flight —
@@ -318,15 +365,18 @@ export function MintyBrain() {
   const stopSpeaking = () => {
     genRef.current++;
     playChainRef.current = Promise.resolve();
-    if (currentSourceRef.current) {
-      try { currentSourceRef.current.onended = null; currentSourceRef.current.stop(); } catch { /* already stopped */ }
-      currentSourceRef.current = null;
+    for (const s of scheduledSourcesRef.current) {
+      try { s.onended = null; s.stop(); } catch { /* already stopped */ }
     }
+    scheduledSourcesRef.current.clear();
+    pendingSourcesRef.current = 0;
+    scheduledUntilRef.current = 0;
+    activeUtterRef.current = 0;
+    audioStartedRef.current = false;
     if (meterRafRef.current) {
       cancelAnimationFrame(meterRafRef.current);
       meterRafRef.current = 0;
     }
-    activeUtterRef.current = 0;
     voiceRef.current.talking = false;
     voiceRef.current.energy = 0;
     setAudioPlaying(false);

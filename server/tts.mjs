@@ -60,8 +60,14 @@ async function ensureStarted() {
   return ok;
 }
 
-/** @param {string} text @param {string} [voice] @returns {Promise<Buffer>} WAV audio */
-export async function synthesize(text, voice = DEFAULT_VOICE) {
+// Opens a streaming synthesis request and hands back the raw fetch Response so
+// the caller can pipe its body straight through to the browser — the body is
+// raw little-endian int16 mono PCM at the rate in the X-Sample-Rate header,
+// arriving in chunks as the model generates them (see server/tts_server.py).
+// Streaming end-to-end (model → here → browser) is what keeps first-audio
+// latency low enough to feel like the Mac voice.
+/** @param {string} text @param {string} [voice] @returns {Promise<Response>} */
+export async function synthesizeStream(text, voice = DEFAULT_VOICE) {
   const ok = await ensureStarted();
   if (!ok) throw new Error('local TTS server unavailable (not installed or failed to start)');
   const res = await fetch(`http://${HOST}:${PORT}/speak`, {
@@ -69,8 +75,10 @@ export async function synthesize(text, voice = DEFAULT_VOICE) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ text, voice }),
   });
-  if (!res.ok) throw new Error(`tts-server HTTP ${res.status}: ${await res.text().catch(() => '')}`);
-  return Buffer.from(await res.arrayBuffer());
+  if (!res.ok || !res.body) {
+    throw new Error(`tts-server HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+  }
+  return res;
 }
 
 // Cold-starting the TTS server takes a few seconds (MLX model load) — warm it
