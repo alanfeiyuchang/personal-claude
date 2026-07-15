@@ -7,16 +7,15 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LOCAL_MODEL, isLocalModel, ensureLocalModelReady, localModelEnv } from './localmodel.mjs';
+import { isLocalModel, ensureLocalModelReady, localModelEnv } from './localmodel.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Minty's brain defaults to Claude Haiku (cloud): via the local Qwen3 8B
 // path it was ~20s/reply, didn't stream (so the orb sat silent until the
 // whole reply landed), and was unreliable at the strict-JSON dispatcher
-// protocol. Local Qwen stays a first-class option — switch to it at runtime
-// via the orb's brain toggle (the 'set_minty_model' WS message), or make it
-// the default here with PC_MINTY_MODEL=qwen3-8b.
+// protocol. Local Qwen stays a first-class option — set PC_MINTY_MODEL=qwen3-8b
+// to use it instead.
 export const CLOUD_MODEL = 'haiku';
 const DEFAULT_MODEL = process.env.PC_MINTY_MODEL || CLOUD_MODEL;
 const ASK_TIMEOUT = 45_000;
@@ -67,22 +66,6 @@ class Minty {
 
   usesLocalModel() {
     return isLocalModel(this.model);
-  }
-
-  // Switches Minty's brain to a different model. Since a running process
-  // can't have its ANTHROPIC_BASE_URL changed (that's only set at spawn
-  // time — see _spawnClaude), this can't be a live in-place switch the way
-  // session.mjs's setModel() is for regular sessions: it has to kill the
-  // current process and let the next ask() respawn fresh with the new
-  // model/env. That does mean conversation memory doesn't carry across a
-  // model switch — same trade-off as an interrupt.
-  setModel(model) {
-    if (model !== LOCAL_MODEL && model !== CLOUD_MODEL) throw new Error(`unknown minty model: ${model}`);
-    if (model === this.model) return;
-    this.model = model;
-    // the 'exit' handler below settles any in-flight turns and clears state;
-    // next ask() sees no live proc and calls _spawnClaude() with this.model
-    try { this.proc?.kill('SIGTERM'); } catch { /* already gone */ }
   }
 
   // interrupt() frees `busy` as soon as it fires, which can be while the

@@ -119,7 +119,6 @@ wss.on('connection', (ws) => {
     type: 'hello',
     sessions: [...sessions.values()].map((s) => s.summary()),
     devRoot: DEV_ROOT,
-    mintyModel: minty.model,
   });
 });
 
@@ -190,12 +189,6 @@ async function handleClientMessage(ws, msg) {
     }
     case 'minty_interrupt': {
       minty.interrupt();
-      break;
-    }
-    case 'set_minty_model': {
-      minty.setModel(String(msg.model ?? ''));
-      // every tab's toggle should reflect the switch, not just the one that sent it
-      broadcast({ type: 'minty_model', model: minty.model });
       break;
     }
     case 'send': {

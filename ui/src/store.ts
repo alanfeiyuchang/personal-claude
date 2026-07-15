@@ -30,7 +30,6 @@ interface Store {
   git: { dir: string; info: GitInfo } | null;
   skillMeta: Record<string, SkillMeta>;
   minty: { phase: MintyPhase; transcript: string; say: string; stream: string; done: boolean };
-  mintyModel: string; // 'qwen3-8b' | 'haiku' — see CLOUD_MODEL/LOCAL_MODEL in server/minty.mjs
   mintyTask: { sessionId: string; text: string; nonce: number } | null;
   transcribeResult: { reqId: string; text: string; error?: string } | null;
 
@@ -65,7 +64,6 @@ export const useStore = create<Store>((set, get) => ({
   git: null,
   skillMeta: {},
   minty: { phase: 'idle', transcript: '', say: '', stream: '', done: false },
-  mintyModel: 'haiku', // matches DEFAULT_MODEL in server/minty.mjs; overwritten by the 'hello' message anyway
   mintyTask: null,
   transcribeResult: null,
 
@@ -101,7 +99,6 @@ export const useStore = create<Store>((set, get) => ({
           sessions,
           order,
           activeId: st.activeId && sessions[st.activeId] ? st.activeId : order[0] ?? null,
-          mintyModel: msg.mintyModel,
         });
         // refresh backlogs after (re)connect
         for (const id of order) wsSend({ type: 'get_backlog', id });
@@ -186,10 +183,6 @@ export const useStore = create<Store>((set, get) => ({
       }
       case 'transcribed': {
         set({ transcribeResult: { reqId: msg.reqId ?? '', text: msg.text, error: msg.error } });
-        break;
-      }
-      case 'minty_model': {
-        set({ mintyModel: msg.model });
         break;
       }
       case 'minty_say': {

@@ -189,7 +189,6 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
 export function MintyBrain() {
   const minty = useStore((s) => s.minty);
   const setMinty = useStore((s) => s.setMinty);
-  const mintyModel = useStore((s) => s.mintyModel);
   const phaseRef = useRef(minty.phase);
   phaseRef.current = minty.phase;
 
@@ -259,14 +258,6 @@ export function MintyBrain() {
     const next = lang === 'mixed' ? 'en' : 'mixed';
     setLang(next);
     localStorage.setItem('pc-minty-lang', next);
-  };
-
-  // 'qwen3-8b' must match LOCAL_MODEL in server/localmodel.mjs, 'haiku' must
-  // match CLOUD_MODEL in server/minty.mjs. Switching kills and respawns
-  // Minty's brain process server-side (see Minty.setModel), so it drops
-  // whatever it was mid-thought on — fine for a deliberate toggle.
-  const toggleMintyModel = () => {
-    wsSend({ type: 'set_minty_model', model: mintyModel === 'qwen3-8b' ? 'haiku' : 'qwen3-8b' });
   };
 
   // tooling hooks: let demos/tests drive the orb state without a mic/TTS
@@ -660,13 +651,6 @@ export function MintyBrain() {
               ))}
             </select>
           )}
-          <button
-            className="minty-lang"
-            title={mintyModel === 'qwen3-8b' ? 'Brain: Qwen3 8B, local & offline (click to switch to Haiku)' : 'Brain: Claude Haiku, cloud (click to switch to local Qwen3)'}
-            onClick={toggleMintyModel}
-          >
-            {mintyModel === 'qwen3-8b' ? 'Qwen' : 'Haiku'}
-          </button>
           <button
             className="minty-lang"
             title={lang === 'mixed' ? 'Listening for 中文 + English (click for English only)' : 'Listening for English only (click for 中英混合)'}
