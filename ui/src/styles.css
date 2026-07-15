@@ -1121,6 +1121,35 @@ body {
   padding: 0;
 }
 
+.md-img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  margin: 6px 0;
+}
+
+.md-video {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  border-radius: 8px;
+  border: 1px solid var(--panel-border);
+  margin: 6px 0;
+  background: #000;
+}
+
+.md-video-embed {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  margin: 6px 0;
+}
+
 .tool-call {
   align-self: flex-start;
   max-width: 92%;

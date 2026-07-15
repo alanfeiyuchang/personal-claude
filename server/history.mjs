@@ -164,11 +164,14 @@ export async function loadTranscript(dir, id) {
       if (Array.isArray(content)) {
         const toolResults = content.filter((b) => b.type === 'tool_result');
         for (const b of toolResults) {
+          const blocks = Array.isArray(b.content) ? b.content : [];
+          const images = extractImages(blocks);
           out.push({
             kind: 'tool_result',
             toolUseId: b.tool_use_id,
             isError: !!b.is_error,
             text: flattenToolResult(b.content),
+            images: images.length ? images : undefined,
             ts,
           });
         }

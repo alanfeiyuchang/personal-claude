@@ -332,11 +332,13 @@ export class ClaudeSession extends EventEmitter {
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'tool_result') {
+              const { text, images } = flattenToolResult(block.content);
               this._pushTranscript({
                 kind: 'tool_result',
                 toolUseId: block.tool_use_id,
                 isError: !!block.is_error,
-                text: flattenToolResult(block.content),
+                text,
+                images: images.length ? images : undefined,
               });
             }
           }
@@ -449,10 +451,24 @@ export class ClaudeSession extends EventEmitter {
   }
 }
 
+// tool results can carry inline image blocks (e.g. the Read tool viewing a
+// .png/.jpg, or a screenshot tool) — those used to get collapsed to the
+// literal string "[image]", discarding the bytes the model itself just saw.
+// Pulling them out here lets the UI actually show what Claude looked at,
+// not just a placeholder.
 function flattenToolResult(content) {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .map((b) => (b.type === 'text' ? b.text : `[${b.type}]`))
+  if (typeof content === 'string') return { text: content, images: [] };
+  if (!Array.isArray(content)) return { text: '', images: [] };
+  const images = [];
+  const text = content
+    .map((b) => {
+      if (b.type === 'text') return b.text;
+      if (b.type === 'image' && b.source?.type === 'base64') {
+        images.push({ media_type: b.source.media_type, data: b.source.data });
+        return '[image]';
+      }
+      return `[${b.type}]`;
+    })
     .join('\n');
+  return { text, images };
 }

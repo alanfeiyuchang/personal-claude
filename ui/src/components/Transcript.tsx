@@ -4,11 +4,41 @@ import type { TranscriptEvent } from '../types';
 
 marked.setOptions({ gfm: true, breaks: true });
 
+const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|ogv)(\?.*)?$/i;
+// bare id or full watch/share URL → normalized embed src
+const YOUTUBE_RE = /(?:youtube\.com\/(?:watch\?v=|shorts\/)|youtu\.be\/)([\w-]{11})/i;
+const VIMEO_RE = /vimeo\.com\/(\d+)/i;
+
+// Claude answers "give me a reference image/video" with plain markdown
+// (`![]()`) pointing at a URL it found — this renderer is what turns that
+// into an actual playable <video> or embedded player instead of a broken
+// <img> tag (marked's default image renderer doesn't know video from image).
+const renderer = new marked.Renderer();
+renderer.image = (href: string, title: string | null, text: string) => {
+  const yt = href.match(YOUTUBE_RE);
+  if (yt) {
+    return `<iframe class="md-video-embed" src="https://www.youtube-nocookie.com/embed/${yt[1]}" title="${escapeHtml(text || 'video')}" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>`;
+  }
+  const vimeo = href.match(VIMEO_RE);
+  if (vimeo) {
+    return `<iframe class="md-video-embed" src="https://player.vimeo.com/video/${vimeo[1]}" title="${escapeHtml(text || 'video')}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen></iframe>`;
+  }
+  if (VIDEO_EXT_RE.test(href)) {
+    return `<video class="md-video" controls preload="metadata" src="${href}">${escapeHtml(text || '')}</video>`;
+  }
+  const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+  return `<a href="${href}" target="_blank" rel="noopener noreferrer"><img class="md-img" src="${href}" alt="${escapeHtml(text || '')}"${titleAttr} loading="lazy"></a>`;
+};
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 function Markdown({ text }: { text: string }) {
   return (
     <div
       className="md"
-      dangerouslySetInnerHTML={{ __html: marked.parse(text) as string }}
+      dangerouslySetInnerHTML={{ __html: marked.parse(text, { renderer }) as string }}
     />
   );
 }
@@ -45,6 +75,18 @@ const ToolCall = memo(function ToolCall({
       {open && (
         <div className="tool-body">
           {input && <pre className="tool-input">{truncate(input, 4000)}</pre>}
+          {result?.images && result.images.length > 0 && (
+            <div className="msg-images">
+              {result.images.map((im, i) => (
+                <img
+                  key={i}
+                  className="msg-img"
+                  src={`data:${im.media_type};base64,${im.data}`}
+                  alt="tool result"
+                />
+              ))}
+            </div>
+          )}
           {result?.text && (
             <pre className="tool-output">{truncate(result.text, 6000)}</pre>
           )}
