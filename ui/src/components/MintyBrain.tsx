@@ -72,12 +72,8 @@ interface Recording {
 // single Space press was the source of the "long wait before listening"
 // delay — this graph is now built once and kept alive/reused for the whole
 // session; start/stop just flips `active` and resets `chunks`.
-async function beginRecording(deviceId?: string): Promise<Recording> {
-  // `ideal` (not `exact`) so a stale/unplugged deviceId falls back to the
-  // system default instead of throwing OverconstrainedError
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: deviceId ? { deviceId: { ideal: deviceId } } : true,
-  });
+async function beginRecording(): Promise<Recording> {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const Ctx = window.AudioContext || (window as any).webkitAudioContext;
   const ctx: AudioContext = new Ctx();
   const source = ctx.createMediaStreamSource(stream);
@@ -146,20 +142,6 @@ function finishRecording(rec: Recording): Blob | null {
   return new Blob([encodeWav(pcm, targetRate)], { type: 'audio/wav' });
 }
 
-// fully releases a recording's mic/AudioContext resources — used both on
-// unmount and when the user switches microphones (which forces the graph
-// to be rebuilt against the new device on the next listen)
-function teardownRecording(rec: Recording) {
-  rec.active = false;
-  try {
-    rec.processor.disconnect();
-    rec.source.disconnect();
-    rec.gain.disconnect();
-  } catch { /* already torn down */ }
-  rec.stream.getTracks().forEach((t) => t.stop());
-  rec.ctx.close();
-}
-
 function arrayBufferToBase64(buf: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buf);
@@ -191,49 +173,17 @@ export function MintyBrain() {
     return () => {
       const rec = recordingRef.current;
       if (!rec) return;
-      teardownRecording(rec);
+      rec.active = false;
+      try {
+        rec.processor.disconnect();
+        rec.source.disconnect();
+        rec.gain.disconnect();
+      } catch { /* already torn down */ }
+      rec.stream.getTracks().forEach((t) => t.stop());
+      rec.ctx.close();
       recordingRef.current = null;
     };
   }, []);
-
-  // mic device picker — without this, getUserMedia({ audio: true }) just
-  // takes whatever macOS calls the "default" input, which on a fresh page
-  // load can resolve to a Continuity iPhone mic instead of the Mac's own.
-  // A ref mirrors the state because startListening is captured once by the
-  // Space-key effect below (deps: [micAvailable]) and would otherwise read
-  // a stale deviceId forever.
-  const [micDeviceId, setMicDeviceIdState] = useState(() => localStorage.getItem('pc-minty-mic') || '');
-  const micDeviceIdRef = useRef(micDeviceId);
-  micDeviceIdRef.current = micDeviceId;
-  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
-
-  const refreshMicDevices = () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
-    navigator.mediaDevices.enumerateDevices().then((devices) => {
-      setMicDevices(devices.filter((d) => d.kind === 'audioinput'));
-    });
-  };
-  // device labels are blank until mic permission has been granted at least
-  // once — 'devicechange' also catches devices plugged/unplugged later
-  useEffect(() => {
-    if (!micAvailable) return;
-    refreshMicDevices();
-    navigator.mediaDevices.addEventListener('devicechange', refreshMicDevices);
-    return () => navigator.mediaDevices.removeEventListener('devicechange', refreshMicDevices);
-  }, [micAvailable]);
-
-  const selectMicDevice = (id: string) => {
-    localStorage.setItem('pc-minty-mic', id);
-    setMicDeviceIdState(id);
-    // the graph is normally built once and reused for the session (see
-    // beginRecording) — tear it down so the next listen re-acquires against
-    // the newly chosen device instead of keeping the old one alive
-    const rec = recordingRef.current;
-    if (rec) {
-      teardownRecording(rec);
-      recordingRef.current = null;
-    }
-  };
 
   // 'mixed' = auto-detect (handles 中英 code-switching); 'en' = English only
   const [lang, setLang] = useState(() => localStorage.getItem('pc-minty-lang') || 'mixed');
@@ -507,11 +457,10 @@ export function MintyBrain() {
       // call in the session pays for getUserMedia + AudioContext setup
       let rec = recordingRef.current;
       if (!rec) {
-        if (!recordingSetupRef.current) recordingSetupRef.current = beginRecording(micDeviceIdRef.current || undefined);
+        if (!recordingSetupRef.current) recordingSetupRef.current = beginRecording();
         rec = await recordingSetupRef.current;
         recordingSetupRef.current = null;
         recordingRef.current = rec;
-        refreshMicDevices(); // labels are only populated once permission has been granted
       }
       if (rec.ctx.state === 'suspended') await rec.ctx.resume();
       rec.chunks = [];
@@ -629,21 +578,6 @@ export function MintyBrain() {
           Minty <span className="minty-phase">{PHASE_LABEL[minty.phase]}</span>
         </span>
         <div className="minty-title-actions">
-          {micAvailable && micDevices.length > 1 && (
-            <select
-              className="minty-mic-select"
-              title="Microphone"
-              value={micDeviceId}
-              onChange={(e) => selectMicDevice(e.target.value)}
-            >
-              <option value="">System default</option>
-              {micDevices.map((d, i) => (
-                <option key={d.deviceId} value={d.deviceId}>
-                  {d.label || `Microphone ${i + 1}`}
-                </option>
-              ))}
-            </select>
-          )}
           <button
             className="minty-lang"
             title={mintyModel === 'qwen3-8b' ? 'Brain: Qwen3 8B, local & offline (click to switch to Haiku)' : 'Brain: Claude Haiku, cloud (click to switch to local Qwen3)'}
