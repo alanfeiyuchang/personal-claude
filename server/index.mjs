@@ -279,11 +279,18 @@ async function handleClientMessage(ws, msg) {
     }
     case 'list_dirs': {
       const entries = await readdir(DEV_ROOT, { withFileTypes: true }).catch(() => []);
+      const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name);
+      // ACM holds a batch of separate sub-projects rather than being a project
+      // itself, so surface its children as selectable projects too.
+      const acmEntries = await readdir(join(DEV_ROOT, 'ACM'), { withFileTypes: true }).catch(() => []);
+      const acmDirs = acmEntries
+        .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+        .map((e) => `ACM/${e.name}`);
       sendTo(ws, {
         type: 'dirs',
         reqId: msg.reqId,
         root: DEV_ROOT,
-        dirs: entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name),
+        dirs: [...dirs, ...acmDirs],
       });
       break;
     }
