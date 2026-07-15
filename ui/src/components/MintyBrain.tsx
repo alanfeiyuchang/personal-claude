@@ -640,10 +640,10 @@ export function MintyBrain() {
 
   return (
     <div className="minty-dock">
-      <div className="panel-title minty-title">
-        <span>
+      <div className="minty-header">
+        <div className="panel-title minty-title-row">
           Minty <span className="minty-phase">{PHASE_LABEL[minty.phase]}</span>
-        </span>
+        </div>
         <div className="minty-title-actions">
           {micAvailable && micDevices.length > 1 && (
             <select
