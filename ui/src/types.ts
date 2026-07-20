@@ -149,6 +149,7 @@ export type ServerMessage =
   | { type: 'session_removed'; id: string }
   | { type: 'backlog'; id: string; events: TranscriptEvent[] }
   | { type: 'dirs'; reqId?: string; root: string; dirs: string[] }
+  | { type: 'dir_listing'; reqId?: string; path: string; parent: string | null; entries: string[]; error?: string | null }
   | { type: 'history'; reqId?: string; dir: string; sessions: HistorySession[] }
   | { type: 'git_info'; reqId?: string; dir: string; info: GitInfo }
   | { type: 'created'; reqId?: string; id: string }

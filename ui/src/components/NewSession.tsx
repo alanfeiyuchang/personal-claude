@@ -74,13 +74,8 @@ export function NewSession() {
           ))}
         </select>
 
-        <label>…or a custom directory</label>
-        <input
-          type="text"
-          placeholder="~/path/to/project"
-          value={customDir}
-          onChange={(e) => setCustomDir(e.target.value)}
-        />
+        <label>…or browse for a directory</label>
+        <FolderBrowser value={customDir} onChange={setCustomDir} />
 
         {pastSessions.length > 0 && (
           <>
@@ -142,4 +137,69 @@ export function NewSession() {
       </div>
     </div>
   );
+}
+
+// lets you navigate the real filesystem (starting at $HOME, since the
+// Project dropdown above already covers everything under devRoot) instead
+// of hand-typing an absolute path. Browsing alone never touches `value` —
+// only "Use this folder" commits, so opening the modal can't silently
+// switch the selection away from the Project dropdown's default.
+function FolderBrowser({ value, onChange }: { value: string; onChange: (path: string) => void }) {
+  const dirListing = useStore((s) => s.dirListing);
+  const [browsePath, setBrowsePath] = useState(value);
+
+  useEffect(() => {
+    wsSend({ type: 'browse_dir', path: browsePath });
+  }, [browsePath]);
+
+  const listing = dirListing;
+  const displayPath = compactHome(listing?.path || browsePath || '~');
+  const isSelected = !!value && !!listing && value === listing.path;
+
+  return (
+    <div className="folder-browser">
+      <div className="folder-browser-path">
+        <button
+          type="button"
+          className="folder-browser-up"
+          disabled={!listing?.parent}
+          title="Up one level"
+          onClick={() => listing?.parent && setBrowsePath(listing.parent)}
+        >
+          ↑
+        </button>
+        <span className="folder-browser-current" title={listing?.path}>
+          {displayPath}
+        </span>
+        <button
+          type="button"
+          className={`folder-browser-use ${isSelected ? 'active' : ''}`}
+          disabled={!listing?.path}
+          onClick={() => listing && onChange(isSelected ? '' : listing.path)}
+        >
+          {isSelected ? '✓ Using this' : 'Use this folder'}
+        </button>
+      </div>
+      <div className="folder-browser-list">
+        {listing?.error && <div className="folder-browser-empty">{listing.error}</div>}
+        {listing && !listing.error && listing.entries.length === 0 && (
+          <div className="folder-browser-empty">No subfolders</div>
+        )}
+        {listing?.entries.map((name) => (
+          <button
+            type="button"
+            key={name}
+            className="folder-browser-item"
+            onClick={() => setBrowsePath(`${listing.path}/${name}`)}
+          >
+            📁 {name}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function compactHome(p: string): string {
+  return p.replace(/^\/Users\/[^/]+/, '~');
 }

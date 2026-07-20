@@ -270,6 +270,31 @@ async function handleClientMessage(ws, msg) {
       sendTo(ws, { type: 'skill_meta', reqId: msg.reqId, dir: msg.dir, skills: await getSkillMeta(dir) });
       break;
     }
+    case 'browse_dir': {
+      const requested = String(msg.path || '').trim();
+      const target = resolve(expandHome(requested || '~'));
+      let entries = [];
+      let error = null;
+      try {
+        const raw = await readdir(target, { withFileTypes: true });
+        entries = raw
+          .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
+          .map((e) => e.name)
+          .sort((a, b) => a.localeCompare(b));
+      } catch (err) {
+        error = err.message;
+      }
+      const parent = dirname(target);
+      sendTo(ws, {
+        type: 'dir_listing',
+        reqId: msg.reqId,
+        path: target,
+        parent: parent === target ? null : parent,
+        entries,
+        error,
+      });
+      break;
+    }
     case 'list_dirs': {
       const entries = await readdir(DEV_ROOT, { withFileTypes: true }).catch(() => []);
       const dirs = entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => e.name);

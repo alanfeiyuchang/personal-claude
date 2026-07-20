@@ -22,6 +22,7 @@ interface Store {
   transcripts: Record<string, TranscriptEvent[]>;
   activeId: string | null;
   dirs: string[];
+  dirListing: { path: string; parent: string | null; entries: string[]; error: string | null } | null;
   showNewSession: boolean;
   showUsage: boolean;
   limits: PlanLimit[] | null;
@@ -56,6 +57,7 @@ export const useStore = create<Store>((set, get) => ({
   transcripts: {},
   activeId: null,
   dirs: [],
+  dirListing: null,
   showNewSession: false,
   showUsage: false,
   limits: null,
@@ -215,6 +217,10 @@ export const useStore = create<Store>((set, get) => ({
       }
       case 'dirs': {
         set({ dirs: msg.dirs, devRoot: msg.root });
+        break;
+      }
+      case 'dir_listing': {
+        set({ dirListing: { path: msg.path, parent: msg.parent, entries: msg.entries, error: msg.error ?? null } });
         break;
       }
       case 'error': {
