@@ -155,15 +155,27 @@ function DirectoryPicker({
 }) {
   const dirChosen = useStore((s) => s.dirChosen);
   const [pending, setPending] = useState(false);
+  const [error, setError] = useState('');
   const reqIdRef = useRef('');
 
   useEffect(() => {
     if (!pending || !dirChosen || dirChosen.reqId !== reqIdRef.current) return;
     setPending(false);
-    if (dirChosen.path) onChange(dirChosen.path);
+    if (dirChosen.error) setError(dirChosen.error);
+    else if (dirChosen.path) onChange(dirChosen.path);
   }, [dirChosen, pending, onChange]);
 
   const browse = () => {
+    if (pending) {
+      // clicking again while waiting abandons the wait locally — a native
+      // panel that's genuinely still open is unaffected, but the button
+      // stops blocking on a response that (for whatever reason) may never
+      // arrive, instead of staying stuck forever
+      reqIdRef.current = '';
+      setPending(false);
+      return;
+    }
+    setError('');
     const reqId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     reqIdRef.current = reqId;
     setPending(true);
@@ -172,9 +184,10 @@ function DirectoryPicker({
 
   return (
     <div className="dir-picker">
-      <button type="button" className="btn" onClick={browse} disabled={pending}>
-        {pending ? 'Waiting for Finder…' : '📁 Browse…'}
+      <button type="button" className="btn" onClick={browse}>
+        {pending ? 'Waiting for Finder… (click to cancel)' : '📁 Browse…'}
       </button>
+      {error && <span className="dir-picker-error">{error}</span>}
       {value && (
         <span className="dir-picker-path" title={value}>
           {value.replace(/^\/Users\/[^/]+/, '~')}

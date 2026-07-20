@@ -22,7 +22,7 @@ interface Store {
   transcripts: Record<string, TranscriptEvent[]>;
   activeId: string | null;
   dirs: string[];
-  dirChosen: { reqId: string; path: string | null } | null;
+  dirChosen: { reqId: string; path: string | null; error?: string } | null;
   showNewSession: boolean;
   showUsage: boolean;
   limits: PlanLimit[] | null;
@@ -225,6 +225,10 @@ export const useStore = create<Store>((set, get) => ({
       }
       case 'error': {
         console.error('server error:', msg.message);
+        // unstick anything waiting on this reqId (e.g. the directory
+        // picker) instead of leaving it hung forever with no feedback —
+        // a server-side failure is still a settled outcome, just a failed one
+        if (msg.reqId) set({ dirChosen: { reqId: msg.reqId, path: null, error: msg.message } });
         break;
       }
     }

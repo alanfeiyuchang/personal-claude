@@ -840,6 +840,11 @@ body {
   background: rgba(139, 124, 246, 0.25);
 }
 
+.dir-picker-error {
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
 /* ── usage panel ──────────────────────────────── */
 
 /* .modal.usage-modal (not .usage-modal alone): the generic .modal width
