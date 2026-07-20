@@ -384,9 +384,25 @@ function expandHome(p) {
 // TCC permission denial, etc.) — the caller treats null as "no selection",
 // not an error to surface
 function chooseFolderDialog(startAt) {
-  const script = `POSIX path of (choose folder with prompt "Select a project directory" default location (POSIX file "${startAt.replace(/["\\]/g, '\\$&')}"))`;
+  const escaped = startAt.replace(/["\\]/g, '\\$&');
+  // a bare `choose folder` has no owning app to activate/front it — this
+  // server runs detached (nohup, no controlling terminal or Dock icon; see
+  // scripts/restart-server.sh), so the dialog had nothing to bring it to
+  // the front and could sit open off-screen/behind other windows forever.
+  // Routing it through System Events and explicitly activating first gives
+  // it an owner that macOS will actually raise.
+  const lines = [
+    'tell application "System Events"',
+    '  activate',
+    `  set thePath to POSIX path of (choose folder with prompt "Select a project directory" default location (POSIX file "${escaped}"))`,
+    'end tell',
+    'return thePath',
+  ];
+  const args = lines.flatMap((line) => ['-e', line]);
   return new Promise((resolvePromise) => {
-    execFile('osascript', ['-e', script], (err, stdout) => {
+    // belt-and-suspenders: if it somehow still never surfaces, time out
+    // instead of leaving the UI stuck on "Waiting for Finder…" forever
+    execFile('osascript', args, { timeout: 120_000 }, (err, stdout) => {
       resolvePromise(err ? null : stdout.trim().replace(/\/+$/, ''));
     });
   });
