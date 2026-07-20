@@ -4,6 +4,7 @@
 import { createServer } from 'node:http';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
 import { join, extname, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -270,29 +271,15 @@ async function handleClientMessage(ws, msg) {
       sendTo(ws, { type: 'skill_meta', reqId: msg.reqId, dir: msg.dir, skills: await getSkillMeta(dir) });
       break;
     }
-    case 'browse_dir': {
-      const requested = String(msg.path || '').trim();
-      const target = resolve(expandHome(requested || '~'));
-      let entries = [];
-      let error = null;
-      try {
-        const raw = await readdir(target, { withFileTypes: true });
-        entries = raw
-          .filter((e) => e.isDirectory() && !e.name.startsWith('.'))
-          .map((e) => e.name)
-          .sort((a, b) => a.localeCompare(b));
-      } catch (err) {
-        error = err.message;
-      }
-      const parent = dirname(target);
-      sendTo(ws, {
-        type: 'dir_listing',
-        reqId: msg.reqId,
-        path: target,
-        parent: parent === target ? null : parent,
-        entries,
-        error,
-      });
+    case 'choose_dir': {
+      // a browser can't hand back a real filesystem path from its own file
+      // pickers (File System Access API only exposes sandboxed handles, no
+      // POSIX path) — but this server is a local Node process on the user's
+      // own Mac, so it can shell out to the actual native Finder "choose
+      // folder" panel and get a real absolute path back.
+      const startAt = resolve(expandHome(String(msg.startAt || '').trim() || DEV_ROOT));
+      const path = await chooseFolderDialog(startAt);
+      sendTo(ws, { type: 'dir_chosen', reqId: msg.reqId, path });
       break;
     }
     case 'list_dirs': {
@@ -391,6 +378,18 @@ function wireSession(session) {
 
 function expandHome(p) {
   return p.startsWith('~') ? join(os.homedir(), p.slice(1)) : p;
+}
+
+// resolves null on Cancel or any AppleScript failure (missing osascript,
+// TCC permission denial, etc.) — the caller treats null as "no selection",
+// not an error to surface
+function chooseFolderDialog(startAt) {
+  const script = `POSIX path of (choose folder with prompt "Select a project directory" default location (POSIX file "${startAt.replace(/["\\]/g, '\\$&')}"))`;
+  return new Promise((resolvePromise) => {
+    execFile('osascript', ['-e', script], (err, stdout) => {
+      resolvePromise(err ? null : stdout.trim().replace(/\/+$/, ''));
+    });
+  });
 }
 
 function sendTo(ws, obj) {

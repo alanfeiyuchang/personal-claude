@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useStore, wsSend } from '../store';
 import { MODELS } from '../models';
 import { timeAgo } from '../util';
@@ -75,7 +75,7 @@ export function NewSession() {
         </select>
 
         <label>…or browse for a directory</label>
-        <FolderBrowser value={customDir} onChange={setCustomDir} />
+        <DirectoryPicker value={customDir} onChange={setCustomDir} startAt={finalDir} />
 
         {pastSessions.length > 0 && (
           <>
@@ -139,67 +139,50 @@ export function NewSession() {
   );
 }
 
-// lets you navigate the real filesystem (starting at $HOME, since the
-// Project dropdown above already covers everything under devRoot) instead
-// of hand-typing an absolute path. Browsing alone never touches `value` —
-// only "Use this folder" commits, so opening the modal can't silently
-// switch the selection away from the Project dropdown's default.
-function FolderBrowser({ value, onChange }: { value: string; onChange: (path: string) => void }) {
-  const dirListing = useStore((s) => s.dirListing);
-  const [browsePath, setBrowsePath] = useState(value);
+// Triggers macOS's actual native "choose folder" panel (via osascript —
+// see chooseFolderDialog in server/index.mjs) instead of recreating a
+// folder browser in-page: the File System Access API's showDirectoryPicker
+// only hands back a sandboxed handle with no real POSIX path, which is no
+// good when the server needs a real `cwd` to spawn `claude` in.
+function DirectoryPicker({
+  value,
+  onChange,
+  startAt,
+}: {
+  value: string;
+  onChange: (path: string) => void;
+  startAt: string;
+}) {
+  const dirChosen = useStore((s) => s.dirChosen);
+  const [pending, setPending] = useState(false);
+  const reqIdRef = useRef('');
 
   useEffect(() => {
-    wsSend({ type: 'browse_dir', path: browsePath });
-  }, [browsePath]);
+    if (!pending || !dirChosen || dirChosen.reqId !== reqIdRef.current) return;
+    setPending(false);
+    if (dirChosen.path) onChange(dirChosen.path);
+  }, [dirChosen, pending, onChange]);
 
-  const listing = dirListing;
-  const displayPath = compactHome(listing?.path || browsePath || '~');
-  const isSelected = !!value && !!listing && value === listing.path;
+  const browse = () => {
+    const reqId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    reqIdRef.current = reqId;
+    setPending(true);
+    wsSend({ type: 'choose_dir', reqId, startAt });
+  };
 
   return (
-    <div className="folder-browser">
-      <div className="folder-browser-path">
-        <button
-          type="button"
-          className="folder-browser-up"
-          disabled={!listing?.parent}
-          title="Up one level"
-          onClick={() => listing?.parent && setBrowsePath(listing.parent)}
-        >
-          ↑
-        </button>
-        <span className="folder-browser-current" title={listing?.path}>
-          {displayPath}
-        </span>
-        <button
-          type="button"
-          className={`folder-browser-use ${isSelected ? 'active' : ''}`}
-          disabled={!listing?.path}
-          onClick={() => listing && onChange(isSelected ? '' : listing.path)}
-        >
-          {isSelected ? '✓ Using this' : 'Use this folder'}
-        </button>
-      </div>
-      <div className="folder-browser-list">
-        {listing?.error && <div className="folder-browser-empty">{listing.error}</div>}
-        {listing && !listing.error && listing.entries.length === 0 && (
-          <div className="folder-browser-empty">No subfolders</div>
-        )}
-        {listing?.entries.map((name) => (
-          <button
-            type="button"
-            key={name}
-            className="folder-browser-item"
-            onClick={() => setBrowsePath(`${listing.path}/${name}`)}
-          >
-            📁 {name}
+    <div className="dir-picker">
+      <button type="button" className="btn" onClick={browse} disabled={pending}>
+        {pending ? 'Waiting for Finder…' : '📁 Browse…'}
+      </button>
+      {value && (
+        <span className="dir-picker-path" title={value}>
+          {value.replace(/^\/Users\/[^/]+/, '~')}
+          <button type="button" className="dir-picker-clear" title="Clear" onClick={() => onChange('')}>
+            ✕
           </button>
-        ))}
-      </div>
+        </span>
+      )}
     </div>
   );
-}
-
-function compactHome(p: string): string {
-  return p.replace(/^\/Users\/[^/]+/, '~');
 }
